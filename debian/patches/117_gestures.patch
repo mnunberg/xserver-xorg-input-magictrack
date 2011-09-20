@@ -1,0 +1,868 @@
+Index: xserver-xorg-input-synaptics/configure.ac
+===================================================================
+--- xserver-xorg-input-synaptics.orig/configure.ac	2011-07-05 11:54:55.781347674 +0300
++++ xserver-xorg-input-synaptics/configure.ac	2011-07-05 11:55:02.771347676 +0300
+@@ -104,6 +104,10 @@
+ 
+ 	# Obtain compiler/linker options for mtdev
+ 	PKG_CHECK_MODULES(MTDEV, mtdev)
++
++	# Obtain compiler/linker options for grail
++	PKG_CHECK_MODULES(GRAIL, utouch-grail)
++	AC_DEFINE(GESTURES, 1, Needed to interpret xorg headers properly)
+ 	;;
+ *freebsd* | *openbsd* | *netbsd* | *dragonfly*)
+ 	AC_MSG_RESULT([psmcomm])
+Index: xserver-xorg-input-synaptics/src/Makefile.am
+===================================================================
+--- xserver-xorg-input-synaptics.orig/src/Makefile.am	2011-07-05 11:54:55.781347674 +0300
++++ xserver-xorg-input-synaptics/src/Makefile.am	2011-07-05 11:55:02.771347676 +0300
+@@ -39,8 +39,8 @@
+ 
+ if BUILD_EVENTCOMM
+ @DRIVER_NAME@_drv_la_SOURCES += \
+-	eventcomm.c eventcomm.h
+-@DRIVER_NAME@_drv_la_LIBADD = $(MTDEV_LIBS)
++	eventcomm.c eventcomm.h grail.c
++@DRIVER_NAME@_drv_la_LIBADD = $(MTDEV_LIBS) $(GRAIL_LIBS)
+ endif
+ 
+ if BUILD_PSMCOMM
+Index: xserver-xorg-input-synaptics/src/eventcomm.c
+===================================================================
+--- xserver-xorg-input-synaptics.orig/src/eventcomm.c	2011-07-05 11:54:55.781347674 +0300
++++ xserver-xorg-input-synaptics/src/eventcomm.c	2011-07-05 11:55:02.771347676 +0300
+@@ -43,6 +43,7 @@
+ #include <xf86.h>
+ #include <xorg/xserver-properties.h>
+ #include <mtdev.h>
++#include <grail.h>
+ 
+ 
+ #define SYSCALL(call) while (((call) == -1) && (errno == EINTR))
+@@ -186,28 +187,13 @@
+             ecpriv->cur_slot = abs.value;
+     }
+ 
+-    ecpriv->mtdev = malloc(sizeof(struct mtdev));
+-    if (!ecpriv->mtdev)
+-        return;
+-
+-    if (mtdev_open(ecpriv->mtdev, pInfo->fd)) {
+-        free(ecpriv->mtdev);
+-        ecpriv->mtdev = NULL;
+-        return;
+-    }
++    GrailOpen(pInfo);
+ }
+ 
+ static void
+ EventDeviceOffHook(InputInfoPtr pInfo)
+ {
+-    SynapticsPrivate *priv = (SynapticsPrivate *)pInfo->private;
+-    EventcommPrivate *ecpriv = (EventcommPrivate *)priv->proto_data;
+-
+-    if (ecpriv->mtdev) {
+-        mtdev_close(ecpriv->mtdev);
+-        free(ecpriv->mtdev);
+-        ecpriv->mtdev = NULL;
+-    }
++    GrailClose(pInfo);
+ }
+ 
+ static void
+@@ -499,9 +485,8 @@
+     int rc = TRUE;
+     ssize_t len;
+ 
+-    if (ecpriv->mtdev)
+-        len = mtdev_get(ecpriv->mtdev, pInfo->fd, ev, 1) *
+-            sizeof(struct input_event);
++    if (ecpriv->grail)
++        len = grail_pull(ecpriv->grail, pInfo->fd);
+     else
+         len = read(pInfo->fd, ev, sizeof(*ev));
+ 
+@@ -511,167 +496,182 @@
+         if (errno != EAGAIN)
+             xf86MsgVerb(X_NONE, 0, "%s: Read error %s\n", pInfo->name, strerror(errno));
+         rc = FALSE;
+-    } else if (len % sizeof(*ev)) {
++    } else if (ecpriv->grail)
++        rc = FALSE;
++    else if (len % sizeof(*ev)) {
+         xf86MsgVerb(X_NONE, 0, "%s: Read error, invalid number of bytes.", pInfo->name);
+         rc = FALSE;
+     }
+     return rc;
+ }
+ 
+-static Bool
+-EventReadHwState(InputInfoPtr pInfo,
+-		 struct SynapticsProtocolOperations *proto_ops,
+-		 struct CommData *comm, struct SynapticsHwState *hwRet)
++Bool
++EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
++                  struct SynapticsHwState *hwRet, const struct input_event *ev)
+ {
+-    struct input_event ev;
+-    Bool v;
+-    struct SynapticsHwState *hw = &(comm->hwState);
+     SynapticsPrivate *priv = (SynapticsPrivate *)pInfo->private;
+-    SynapticsParameters *para = &priv->synpara;
+     EventcommPrivate *ecpriv = (EventcommPrivate *)priv->proto_data;
++    SynapticsParameters *para = &priv->synpara;
++    struct SynapticsHwState *hw = &(comm->hwState);
++    Bool v;
+ 
+-    while (SynapticsReadEvent(pInfo, &ev)) {
+-	switch (ev.type) {
+-	case EV_SYN:
+-	    switch (ev.code) {
+-	    case SYN_REPORT:
+-		if (comm->oneFinger)
+-		    hw->numFingers = 1;
+-		else if (comm->twoFingers)
+-		    hw->numFingers = 2;
+-		else if (comm->threeFingers)
+-		    hw->numFingers = 3;
+-		else
+-		    hw->numFingers = 0;
+-		*hwRet = *hw;
++    switch (ev->type) {
++    case EV_SYN:
++        switch (ev->code) {
++        case SYN_REPORT:
++            if (comm->oneFinger)
++                hw->numFingers = 1;
++            else if (comm->twoFingers)
++                hw->numFingers = 2;
++            else if (comm->threeFingers)
++                hw->numFingers = 3;
++            else
++                hw->numFingers = 0;
++            *hwRet = *hw;
++            ProcessTouch(pInfo, priv);
++            return TRUE;
++        }
++    case EV_KEY:
++        v = (ev->value ? TRUE : FALSE);
++        switch (ev->code) {
++        case BTN_LEFT:
++            hw->left = v;
++            break;
++        case BTN_RIGHT:
++            hw->right = v;
++            break;
++        case BTN_MIDDLE:
++            hw->middle = v;
++            break;
++        case BTN_FORWARD:
++            hw->up = v;
++            break;
++        case BTN_BACK:
++            hw->down = v;
++            break;
++        case BTN_0:
++            hw->multi[0] = v;
++            break;
++        case BTN_1:
++            hw->multi[1] = v;
++            break;
++        case BTN_2:
++            hw->multi[2] = v;
++            break;
++        case BTN_3:
++            hw->multi[3] = v;
++            break;
++        case BTN_4:
++            hw->multi[4] = v;
++            break;
++        case BTN_5:
++            hw->multi[5] = v;
++            break;
++        case BTN_6:
++            hw->multi[6] = v;
++            break;
++        case BTN_7:
++            hw->multi[7] = v;
++            break;
++        case BTN_TOOL_FINGER:
++            comm->oneFinger = v;
++            break;
++        case BTN_TOOL_DOUBLETAP:
++            comm->twoFingers = v;
++            break;
++        case BTN_TOOL_TRIPLETAP:
++            comm->threeFingers = v;
++            break;
++        case BTN_TOUCH:
++            if (!priv->has_pressure)
++                    hw->z = v ? para->finger_high + 1 : 0;
++            break;
++        }
++        break;
++    case EV_ABS:
++        switch (ev->code) {
++        case ABS_X:
++            hw->x = ev->value;
++            break;
++        case ABS_Y:
++            hw->y = ev->value;
++            break;
++        case ABS_PRESSURE:
++            hw->z = ev->value;
++            break;
++        case ABS_TOOL_WIDTH:
++            hw->fingerWidth = ev->value;
++            break;
++        case ABS_MT_SLOT:
++            if (priv->has_touch)
++            {
+                 ProcessTouch(pInfo, priv);
+-		return TRUE;
+-	    }
+-	    break;
+-	case EV_KEY:
+-	    v = (ev.value ? TRUE : FALSE);
+-	    switch (ev.code) {
+-	    case BTN_LEFT:
+-		hw->left = v;
+-		break;
+-	    case BTN_RIGHT:
+-		hw->right = v;
+-		break;
+-	    case BTN_MIDDLE:
+-		hw->middle = v;
+-		break;
+-	    case BTN_FORWARD:
+-		hw->up = v;
+-		break;
+-	    case BTN_BACK:
+-		hw->down = v;
+-		break;
+-	    case BTN_0:
+-		hw->multi[0] = v;
+-		break;
+-	    case BTN_1:
+-		hw->multi[1] = v;
+-		break;
+-	    case BTN_2:
+-		hw->multi[2] = v;
+-		break;
+-	    case BTN_3:
+-		hw->multi[3] = v;
+-		break;
+-	    case BTN_4:
+-		hw->multi[4] = v;
+-		break;
+-	    case BTN_5:
+-		hw->multi[5] = v;
+-		break;
+-	    case BTN_6:
+-		hw->multi[6] = v;
+-		break;
+-	    case BTN_7:
+-		hw->multi[7] = v;
+-		break;
+-	    case BTN_TOOL_FINGER:
+-		comm->oneFinger = v;
+-		break;
+-	    case BTN_TOOL_DOUBLETAP:
+-		comm->twoFingers = v;
+-		break;
+-	    case BTN_TOOL_TRIPLETAP:
+-		comm->threeFingers = v;
+-		break;
+-	    case BTN_TOUCH:
+-		if (!priv->has_pressure)
+-			hw->z = v ? para->finger_high + 1 : 0;
+-		break;
+-	    }
+-	    break;
+-	case EV_ABS:
+-	    switch (ev.code) {
+-	    case ABS_X:
+-		hw->x = ev.value;
+-		break;
+-	    case ABS_Y:
+-		hw->y = ev.value;
+-		break;
+-	    case ABS_PRESSURE:
+-		hw->z = ev.value;
+-		break;
+-	    case ABS_TOOL_WIDTH:
+-		hw->fingerWidth = ev.value;
+-		break;
+-            case ABS_MT_SLOT:
+-                if (priv->has_touch)
+-                {
+-                    ProcessTouch(pInfo, priv);
+-                    ecpriv->cur_slot = ev.value;
+-                }
++                ecpriv->cur_slot = ev->value;
++            }
++            break;
++        case ABS_MT_TRACKING_ID:
++            if (ecpriv->cur_slot < 0)
+                 break;
+-            case ABS_MT_TRACKING_ID:
+-                if (ecpriv->cur_slot < 0)
+-                    break;
+-                if (ev.value >= 0)
++            if (ev->value >= 0)
++            {
++                if (ecpriv->mt_slot_map[ecpriv->cur_slot] != (uint32_t)-1)
+                 {
+-                    if (ecpriv->mt_slot_map[ecpriv->cur_slot] != (uint32_t)-1)
+-                    {
+-                        xf86Msg(X_WARNING, "%s: Ignoring new tracking ID for "
+-                                "existing touch.\n", pInfo->dev->name);
+-                    }
+-                    else
+-                    {
+-                        ecpriv->mt_slot_map[ecpriv->cur_slot] =
+-                            ecpriv->next_touch_id++;
+-                        ecpriv->new_touch = TRUE;
+-                        valuator_mask_copy(ecpriv->touch_mask,
+-                                           ecpriv->cur_vals);
+-                    }
++                    xf86Msg(X_WARNING, "%s: Ignoring new tracking ID for "
++                            "existing touch.\n", pInfo->dev->name);
+                 }
+                 else
+-                    ecpriv->close_slot = TRUE;
+-                break;
+-            case ABS_MT_TOUCH_MAJOR:
+-            case ABS_MT_TOUCH_MINOR:
+-            case ABS_MT_WIDTH_MAJOR:
+-            case ABS_MT_WIDTH_MINOR:
+-            case ABS_MT_ORIENTATION:
+-            case ABS_MT_POSITION_X:
+-            case ABS_MT_POSITION_Y:
+-            case ABS_MT_TOOL_TYPE:
+-            case ABS_MT_BLOB_ID:
+-            case ABS_MT_PRESSURE:
+-                if (ecpriv->cur_slot >= 0)
+                 {
+-                    valuator_mask_set(ecpriv->touch_mask,
+-                                      ecpriv->mt_axis_map[ev.code - ABS_MT_TOUCH_MAJOR],
+-                                      ev.value);
+-                    valuator_mask_set(ecpriv->cur_vals,
+-                                      ecpriv->mt_axis_map[ev.code - ABS_MT_TOUCH_MAJOR],
+-                                      ev.value);
++                    ecpriv->mt_slot_map[ecpriv->cur_slot] =
++                        ecpriv->next_touch_id++;
++                    ecpriv->new_touch = TRUE;
++                    valuator_mask_copy(ecpriv->touch_mask,
++                                       ecpriv->cur_vals);
+                 }
+-                break;
+-	    }
+-	    break;
+-	}
++            }
++            else
++                ecpriv->close_slot = TRUE;
++            break;
++        case ABS_MT_TOUCH_MAJOR:
++        case ABS_MT_TOUCH_MINOR:
++        case ABS_MT_WIDTH_MAJOR:
++        case ABS_MT_WIDTH_MINOR:
++        case ABS_MT_ORIENTATION:
++        case ABS_MT_POSITION_X:
++        case ABS_MT_POSITION_Y:
++        case ABS_MT_TOOL_TYPE:
++        case ABS_MT_BLOB_ID:
++        case ABS_MT_PRESSURE:
++            if (ecpriv->cur_slot >= 0)
++            {
++                valuator_mask_set(ecpriv->touch_mask,
++                                  ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR],
++                                  ev->value);
++                valuator_mask_set(ecpriv->cur_vals,
++                                  ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR],
++                                  ev->value);
++            }
++            break;
++        }
++        break;
++    }
++
++    return FALSE;
++}
++
++static Bool
++EventReadHwState(InputInfoPtr pInfo,
++		 struct SynapticsProtocolOperations *proto_ops,
++		 struct CommData *comm, struct SynapticsHwState *hwRet)
++{
++    SynapticsPrivate *priv = (SynapticsPrivate *)pInfo->private;
++    EventcommPrivate *ecpriv = (EventcommPrivate *)priv->proto_data;
++    struct input_event ev;
++
++    while (SynapticsReadEvent(pInfo, &ev)) {
++        if (EventProcessEvent(pInfo, comm, hwRet, &ev) && !ecpriv->grail)
++            return TRUE;
+     }
++
+     return FALSE;
+ }
+ 
+Index: xserver-xorg-input-synaptics/src/eventcomm.h
+===================================================================
+--- xserver-xorg-input-synaptics.orig/src/eventcomm.h	2011-07-05 11:54:55.781347674 +0300
++++ xserver-xorg-input-synaptics/src/eventcomm.h	2011-07-05 11:55:02.771347676 +0300
+@@ -32,12 +32,15 @@
+ #include <X11/Xdefs.h>
+ #include <xorg/input.h>
+ #include <stdint.h>
++#include <xorg/xf86Xinput.h>
++#include "synproto.h"
+ 
+ /* for auto-dev: */
+ #define DEV_INPUT_EVENT "/dev/input"
+ #define EVENT_DEV_NAME "event"
+ 
+ struct mtdev;
++struct grail;
+ 
+ typedef struct {
+     BOOL need_grab;
+@@ -54,6 +57,13 @@
+     int num_mt_axes;
+     int num_touches;
+     struct mtdev *mtdev;
++    struct grail *grail;
+ } EventcommPrivate;
+ 
++extern Bool EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
++                              struct SynapticsHwState *hwRet,
++                              const struct input_event *ev);
++extern int GrailOpen(InputInfoPtr pInfo);
++extern void GrailClose(InputInfoPtr pInfo);
++
+ #endif /* _EVENTCOMM_H_ */
+Index: xserver-xorg-input-synaptics/src/grail.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ xserver-xorg-input-synaptics/src/grail.c	2011-07-05 11:55:02.771347676 +0300
+@@ -0,0 +1,376 @@
++/*
++ * Copyright © 2010 Canonical, Ltd.
++ *
++ * Permission to use, copy, modify, distribute, and sell this software
++ * and its documentation for any purpose is hereby granted without
++ * fee, provided that the above copyright notice appear in all copies
++ * and that both that copyright notice and this permission notice
++ * appear in supporting documentation, and that the name of Red Hat
++ * not be used in advertising or publicity pertaining to distribution
++ * of the software without specific, written prior permission.  Red
++ * Hat makes no representations about the suitability of this software
++ * for any purpose.  It is provided "as is" without express or implied
++ * warranty.
++ *
++ * THE AUTHORS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
++ * INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN
++ * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY SPECIAL, INDIRECT OR
++ * CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
++ * OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
++ * NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
++ * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ *
++ * Authors:
++ *	Chase Douglas (chase.douglas@canonical.com)
++ */
++
++/* So we can get at the right data in xorg/windowstr.h */
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++
++#include <xorg-server.h>
++#include <X11/Xatom.h>
++#include <xf86.h>
++#include <xf86Xinput.h>
++#include <exevents.h>
++#include <windowstr.h>
++#include <xorg/os.h>
++#include <grail.h>
++
++#include <xorg/windowstr.h>
++#include "synaptics.h"
++#include "synapticsstr.h"
++#include "eventcomm.h"
++
++//#include "gestureproto.h"
++
++/*
++ * Provided by the Maverick X server, we don't want to pollute the official
++ * X.org API.
++ */
++extern _X_EXPORT void xf86PostGestureEvent(DeviceIntPtr dev, unsigned short x,
++                         unsigned short y, unsigned short client_id,
++                         unsigned short gesture_id, unsigned short gesture_type,
++                         Window root, Window event, Window child,
++                         unsigned short status, unsigned short num_props,
++                         float *props);
++
++static WindowPtr CommonAncestor(WindowPtr a, WindowPtr b)
++{
++    WindowPtr c;
++
++    if (a == b)
++        return a;
++
++    for (b = b; b; b = b->parent)
++        for (c = a; c; c = c->parent)
++            if (c == b)
++                return b;
++
++    return NullWindow;
++}
++
++static WindowPtr GetWindowForGestures(struct grail *grail,
++                                      const struct grail_coord *contacts,
++                                      int num_contacts)
++{
++    WindowPtr window = NULL;
++    int i;
++
++    for (i = 0; i < num_contacts; i++)
++    {
++        float screen_x = contacts[i].x;
++        float screen_y = contacts[i].y;
++        WindowPtr this_window;
++
++        this_window = xf86CoordinatesToWindow(screen_x, screen_y, 0);
++        if (!this_window)
++            return NullWindow;
++
++        if (!window)
++            window = this_window;
++        else
++            window = CommonAncestor(window, this_window);
++    }
++
++    return window;
++}
++
++static int GetClients(struct grail *grail,
++		      struct grail_client_info *clients, int max_clients,
++		      const struct grail_coord *contacts, int num_contacts,
++		      const grail_mask_t *types, int type_bytes)
++{
++    WindowPtr child_window;
++    WindowPtr window;
++    WindowPtr root_window;
++    InputInfoPtr pInfo = grail->priv;
++    DeviceIntPtr master = pInfo->dev->u.master;
++    struct grail_coord cursor_coord;
++    int j;
++    int found_match = 0;
++    int num_clients = 0;
++    int type;
++
++    if (max_clients <= 0)
++        return 0;
++
++    /* If this mouse isn't hooked up to a cursor, don't do anything */
++    if (!master)
++        return 0;
++
++    cursor_coord.x = master->last.valuators[0];
++    cursor_coord.y = master->last.valuators[1];
++
++    child_window = GetWindowForGestures(grail, &cursor_coord, 1);
++
++    if (!child_window)
++        return 0;
++
++    memset(clients, 0, sizeof(struct grail_client_info) * max_clients);
++
++    /* Find the root window. */
++    for (root_window = child_window; root_window->parent;
++         root_window = root_window->parent);
++
++    /*
++     * Check for a root client with SYSFLAG1 set. SYSFLAG1 is effectively an
++     * active grab for system gestures. We assume only one client has SYSFLAG1
++     * set.
++     */
++    window = child_window;
++    while (window)
++    {
++        /* Check if any gestures have been selected on this window. */
++        if (wGestureMasks(window))
++        {
++            GestureClientsPtr client;
++
++            /* For each client */
++            for (client = wGestureMasks(window)->clients; client;
++                 client = client->next)
++            {
++                int first = 1;
++
++                /* If the client has set the SYSFLAG1 bit */
++                if (BitIsOn(client->gestureMask[0], GRAIL_TYPE_SYSFLAG1))
++                {
++                    /* For each recognized gesture */
++                    grail_mask_foreach(type, types, type_bytes)
++                    {
++                        if (type == GRAIL_TYPE_SYSFLAG1)
++                            continue;
++
++                        /*
++                         * Check if this client selected for this gesture.
++                         * Request may be for this device or all devices.
++                         */
++                        if (BitIsOn(client->gestureMask[pInfo->dev->id], type) ||
++                            BitIsOn(client->gestureMask[0], type))
++                        {
++                            if (first) {
++                                /* Set up new client in array */
++                                clients[0].id.client = CLIENT_ID(client->resource);
++                                clients[0].id.root = root_window->drawable.id;
++                                clients[0].id.child = child_window->drawable.id;
++                                clients[0].id.event = window->drawable.id;
++                                grail_mask_clear(clients[0].mask,
++                                                 DIM_GRAIL_TYPE_BYTES);
++                                first = 0;
++                            }
++
++                            /* Set this gesture bit in the client's gesture mask */
++                            SetBit(clients[0].mask, type);
++                            num_clients = 1;
++                        }
++                    }
++
++                    /*
++                     * Either we found a gesture, or we stop looking for SYSFLAG1
++                     * clients.
++                     */
++                    if (num_clients) {
++                        SetBit(clients[0].mask, GRAIL_TYPE_SYSFLAG1);
++                        goto next_window;
++                    }
++                }
++            }
++        }
++
++next_window:
++        window = window->parent;
++    }
++
++    /*
++     * Traverse the window hierarchy looking for a window with a client
++     * selecting for one of the recognized gestures.
++     *
++     * All clients of the top most window with a match will receive events if
++     * they have selected for gestures that have been recognized, even if they
++     * have selected for different gestures between them.
++     *
++     * Once any gesture is matched on a window, propagation through the window
++     * hierarchy ends.
++     */
++    for (window = child_window; window && !found_match; window = window->parent)
++    {
++        /* No client selected for gestures on this window */
++        if (!wGestureMasks(window))
++            continue;
++
++        /* For each recognized gesture */
++        grail_mask_foreach(type, types, type_bytes)
++        {
++            if (type == GRAIL_TYPE_SYSFLAG1)
++                continue;
++
++            /* Check if any client selected for this gesture on the window */
++            if (BitIsOn(wGestureMasks(window)->mask, type))
++            {
++                GestureClientsPtr client;
++
++                /* For each client that selected for gestures on this window */
++                for (client = wGestureMasks(window)->clients; client;
++                     client = client->next)
++                {
++                     /*
++                      * Check if this client selected for this gesture. Request
++                      * may be for this device or all devices.
++                      */
++                     if (BitIsOn(client->gestureMask[pInfo->dev->id], type) ||
++                         BitIsOn(client->gestureMask[0], type))
++                     {
++                         /*
++                          * Find this client in the clients array passed back to
++                          * the caller.
++                          */
++                         for (j = 0; j < num_clients; j++)
++                             if (clients[j].id.client ==
++                                 CLIENT_ID(client->resource))
++                                 break;
++
++                         /* Check if the client exists in the array yet */
++                         if (j >= num_clients)
++                         {
++                             /* We ran out of room in the array, return error */
++                             if (num_clients >= max_clients)
++                                 return -1;
++                             /* Set up new client in array */
++                             clients[j].id.client = CLIENT_ID(client->resource);
++                             clients[j].id.root = root_window->drawable.id;
++                             clients[j].id.child = child_window->drawable.id;
++                             clients[j].id.event = window->drawable.id;
++                             num_clients++;
++                         }
++
++                         /* Set this gesture bit in the client's gesture mask */
++                         SetBit(clients[j].mask, type);
++                     }
++                }
++
++                /* A match has been found, stop propagating */
++                found_match = 1;
++            }
++        }
++    }
++
++    return num_clients;
++}
++
++static void GrailEvent(struct grail *grail, const struct input_event *ev)
++{
++    InputInfoPtr pInfo = (InputInfoPtr)grail->priv;
++    SynapticsPrivate *priv = (SynapticsPrivate *)pInfo->private;
++    struct SynapticsHwState hw;
++    int delay = 0;
++    Bool newDelay = FALSE;
++
++    if (EventProcessEvent(pInfo, &priv->comm, &hw, ev)) {
++        hw.millis = GetTimeInMillis();
++        priv->hwState = hw;
++        delay = HandleState(pInfo, &hw);
++        newDelay = TRUE;
++    }
++
++    if (newDelay)
++        priv->timer = TimerSet(priv->timer, 0, delay, timerFunc, pInfo);
++}
++
++static void GrailGesture(struct grail *grail, const struct grail_event *ev)
++{
++    InputInfoPtr pInfo = grail->priv;
++    int x;
++    int y;
++
++    DeviceIntPtr master = pInfo->dev->u.master;
++
++    /* If this mouse isn't hooked up to a cursor, don't do anything */
++    if (!master)
++        return;
++
++    /* Note: Master device valuators are in screen coordinates */
++    x = master->last.valuators[0];
++    y = master->last.valuators[1];
++
++    xf86PostGestureEvent(pInfo->dev, x, y, ev->client_id.client, ev->id,
++                         ev->type, ev->client_id.root, ev->client_id.event,
++                         ev->client_id.child, ev->status,
++                         ev->nprop, (float *)ev->prop);
++}
++
++int
++GrailOpen(InputInfoPtr pInfo)
++{
++    SynapticsPrivate *priv = pInfo->private;
++    EventcommPrivate *ecpriv = priv->proto_data;
++
++    ecpriv->grail = malloc(sizeof(struct grail));
++    if (!ecpriv->grail) {
++        xf86Msg(X_ERROR, "%s: failed to allocate grail structure\n",
++                pInfo->name);
++        return -1;
++    }
++
++    memset(ecpriv->grail, 0, sizeof(struct grail));
++    ecpriv->grail->get_clients = GetClients;
++    ecpriv->grail->event = GrailEvent;
++    ecpriv->grail->gesture = GrailGesture;
++    ecpriv->grail->priv = pInfo;
++
++    if (grail_open(ecpriv->grail, pInfo->fd)) {
++        xf86Msg(X_INFO, "%s: failed to open grail, no gesture support\n",
++                pInfo->name);
++        free(ecpriv->grail);
++        ecpriv->grail = NULL;
++        return -1;
++    }
++
++    {
++        struct grail_coord min;
++        struct grail_coord max;
++
++        min.x = screenInfo.screens[0]->x;
++        min.y = screenInfo.screens[0]->y;
++        max.x = min.x + screenInfo.screens[0]->width;
++        max.y = min.y + screenInfo.screens[0]->height;
++
++        grail_set_bbox(ecpriv->grail, &min, &max);
++    }
++
++    return 0;
++}
++
++void
++GrailClose(InputInfoPtr pInfo)
++{
++    SynapticsPrivate *priv = pInfo->private;
++    EventcommPrivate *ecpriv = priv->proto_data;
++
++    if (ecpriv->grail) {
++        grail_close(ecpriv->grail, pInfo->fd);
++        free(ecpriv->grail);
++        ecpriv->grail = NULL;
++    }
++}
+Index: xserver-xorg-input-synaptics/src/synaptics.c
+===================================================================
+--- xserver-xorg-input-synaptics.orig/src/synaptics.c	2011-07-05 11:54:55.781347674 +0300
++++ xserver-xorg-input-synaptics/src/synaptics.c	2011-07-05 11:55:02.771347676 +0300
+@@ -119,7 +119,6 @@
+ static void SynapticsUnInit(InputDriverPtr drv, InputInfoPtr pInfo, int flags);
+ static Bool DeviceControl(DeviceIntPtr, int);
+ static void ReadInput(InputInfoPtr);
+-static int HandleState(InputInfoPtr, struct SynapticsHwState*);
+ static int ControlProc(InputInfoPtr, xDeviceCtl*);
+ static int SwitchMode(ClientPtr, DeviceIntPtr, int);
+ static Bool DeviceInit(DeviceIntPtr);
+@@ -1219,7 +1218,7 @@
+     return inside_area;
+ }
+ 
+-static CARD32
++CARD32
+ timerFunc(OsTimerPtr timer, CARD32 now, pointer arg)
+ {
+     InputInfoPtr pInfo = arg;
+@@ -2422,7 +2421,7 @@
+  * milliseconds to wait before calling the function again if no state change
+  * occurs.
+  */
+-static int
++int
+ HandleState(InputInfoPtr pInfo, struct SynapticsHwState *hw)
+ {
+     SynapticsPrivate *priv = (SynapticsPrivate *) (pInfo->private);
+Index: xserver-xorg-input-synaptics/src/synproto.h
+===================================================================
+--- xserver-xorg-input-synaptics.orig/src/synproto.h	2011-07-05 11:54:55.781347674 +0300
++++ xserver-xorg-input-synaptics/src/synproto.h	2011-07-05 11:55:02.771347676 +0300
+@@ -105,4 +105,7 @@
+ #endif /* BUILD_PSMCOMM */
+ extern struct SynapticsProtocolOperations alps_proto_operations;
+ 
++extern int HandleState(InputInfoPtr, struct SynapticsHwState*);
++extern CARD32 timerFunc(OsTimerPtr timer, CARD32 now, pointer arg);
++
+ #endif /* _SYNPROTO_H_ */

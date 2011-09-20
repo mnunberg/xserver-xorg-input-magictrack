@@ -1,0 +1,20 @@
+Index: xserver-xorg-input-synaptics/src/eventcomm.c
+===================================================================
+--- xserver-xorg-input-synaptics.orig/src/eventcomm.c	2011-07-05 11:55:12.731347678 +0300
++++ xserver-xorg-input-synaptics/src/eventcomm.c	2011-07-05 11:55:17.051347678 +0300
+@@ -555,6 +555,7 @@
+     case EV_SYN:
+         switch (ev->code) {
+         case SYN_REPORT:
++            ProcessTouch(pInfo, priv);
+             if (priv->has_touch && ecpriv->active_touches < 2)
+                 hw->numFingers = ecpriv->active_touches;
+             else if (comm->oneFinger)
+@@ -566,7 +567,6 @@
+             else
+                 hw->numFingers = 0;
+             *hwRet = *hw;
+-            ProcessTouch(pInfo, priv);
+             return TRUE;
+         }
+     case EV_KEY:

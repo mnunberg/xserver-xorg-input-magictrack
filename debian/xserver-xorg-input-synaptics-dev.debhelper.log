@@ -1,0 +1,2 @@
+dh_auto_install
+dh_quilt_patch
