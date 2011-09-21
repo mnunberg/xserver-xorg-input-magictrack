@@ -1864,9 +1864,10 @@ ComputeDeltas(SynapticsPrivate *priv, const struct SynapticsHwState *hw,
     }
 
     if (!inside_area || !moving_state || priv->palm ||
-	priv->vert_scroll_edge_on || priv->horiz_scroll_edge_on ||
-	priv->vert_scroll_twofinger_on || priv->horiz_scroll_twofinger_on ||
-	priv->circ_scroll_on || priv->prevFingers != hw->numFingers)
+    		priv->vert_scroll_edge_on || priv->horiz_scroll_edge_on ||
+    		priv->vert_scroll_twofinger_on || priv->horiz_scroll_twofinger_on ||
+    		priv->circ_scroll_on || priv->prevFingers != hw->numFingers
+	)
     {
         /* reset packet counter. */
         priv->count_packet_finger = 0;
@@ -1963,7 +1964,10 @@ HandleScrolling(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	priv->horiz_scroll_twofinger_on = FALSE;
 	return delay;
     }
-
+    int effective_numFingers = hw->numFingers;
+    if(priv->amt_last_action) {
+    	effective_numFingers--;
+    }
     /* scroll detection */
     if (finger && !priv->finger_state) {
 	stop_coasting(priv);
@@ -1986,7 +1990,7 @@ HandleScrolling(SynapticsPrivate *priv, struct SynapticsHwState *hw,
     }
     if (!priv->circ_scroll_on) {
 	if (finger) {
-	    if (hw->numFingers == 2) {
+	    if (effective_numFingers == 2) {
 		if (!priv->vert_scroll_twofinger_on &&
 		    (para->scroll_twofinger_vert) && (para->scroll_dist_vert != 0)) {
 		    priv->vert_scroll_twofinger_on = TRUE;
@@ -2031,7 +2035,7 @@ HandleScrolling(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	    priv->circ_scroll_on = FALSE;
 	}
 
-	if (!finger || hw->numFingers != 2) {
+	if (!finger || effective_numFingers != 2) {
 	    if (priv->vert_scroll_twofinger_on) {
 		DBG(7, "vert two-finger scroll off\n");
 		priv->vert_scroll_twofinger_on = FALSE;
@@ -2541,9 +2545,12 @@ HandleState(InputInfoPtr pInfo, struct SynapticsHwState *hw)
     /* Post events */
     if (finger > FS_UNTOUCHED) {
         if (priv->absolute_events && inside_active_area) {
+        	DBG(7, "ABS: Posting %d,%d\n",hw->x, hw->y );
             xf86PostMotionEvent(pInfo->dev, 1, 0, 2, hw->x, hw->y);
         } else if (dx || dy) {
+//        	DBG(7, "REL: Posting %d,%d\n", dx, dy );
             xf86PostMotionEvent(pInfo->dev, 0, 0, 2, dx, dy);
+
         }
     }
 

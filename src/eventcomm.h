@@ -66,6 +66,10 @@ typedef struct {
     int max_x;
     int min_y;
     int max_y;
+
+    /*State data for clickpads*/
+    Bool depressed;
+    int pressing_slot;
     int contact_x[HIST_SLOT_MAX];
     int contact_y[HIST_SLOT_MAX];
 } EventcommPrivate;
