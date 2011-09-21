@@ -70,6 +70,7 @@ typedef struct {
     /*State data for clickpads*/
     Bool depressed;
     int pressing_slot;
+    int last_sender;
     int contact_x[HIST_SLOT_MAX];
     int contact_y[HIST_SLOT_MAX];
 } EventcommPrivate;

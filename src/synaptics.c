@@ -1863,12 +1863,19 @@ ComputeDeltas(SynapticsPrivate *priv, const struct SynapticsHwState *hw,
 	}
     }
 
+    if(hw->new_coords) {
+    	moving_state = MS_FALSE;
+    }
+
     if (!inside_area || !moving_state || priv->palm ||
     		priv->vert_scroll_edge_on || priv->horiz_scroll_edge_on ||
     		priv->vert_scroll_twofinger_on || priv->horiz_scroll_twofinger_on ||
     		priv->circ_scroll_on || priv->prevFingers != hw->numFingers
 	)
     {
+    	if(hw->new_coords) {
+    		DBG(7, "ComputeDeltas: new_coords set\n");
+    	}
         /* reset packet counter. */
         priv->count_packet_finger = 0;
         goto out;
@@ -1890,7 +1897,9 @@ skip:
     priv->count_packet_finger++;
 out:
     priv->prevFingers = hw->numFingers;
-
+    if(abs(dx) > 200 || abs(dy) > 200) {
+    	DBG(7, "ComputeDeltas: Still returning large value. dx=%0.5f, dy=%0.5f\n", dx, dy);
+    }
     *dxP = dx;
     *dyP = dy;
 
@@ -2443,7 +2452,6 @@ HandleState(InputInfoPtr pInfo, struct SynapticsHwState *hw)
     int delay = 1000000000;
     int timeleft;
     Bool inside_active_area;
-//    DBG(7, "X=%d, Y=%d\n", hw->x, hw->y);
 
     update_shm(pInfo, hw);
 
@@ -2458,6 +2466,7 @@ HandleState(InputInfoPtr pInfo, struct SynapticsHwState *hw)
     priv->hyst_center_y = hysteresis(hw->y, priv->hyst_center_y, para->hyst_y);
     hw->x = priv->hyst_center_x;
     hw->y = priv->hyst_center_y;
+//    DBG(7, "Raw:   X=%d, Y=%d\n", hw->x, hw->y);
 
     inside_active_area = is_inside_active_area(priv, hw->x, hw->y);
 
@@ -2511,6 +2520,7 @@ HandleState(InputInfoPtr pInfo, struct SynapticsHwState *hw)
 	 * detection.
 	 */
 	ScaleCoordinates(priv, hw);
+//    DBG(7, "After Scale: X=%d, Y=%d\n", hw->x, hw->y);
     }
 
     dx = dy = 0;

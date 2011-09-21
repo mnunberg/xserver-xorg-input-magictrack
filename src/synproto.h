@@ -50,6 +50,8 @@ struct SynapticsHwState {
 
     Bool multi[8];
     Bool middle;		/* Some ALPS touchpads have a middle button */
+
+    Bool new_coords;	/*If we want to restart mapping here*/
 };
 
 struct CommData {

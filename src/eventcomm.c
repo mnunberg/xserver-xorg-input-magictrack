@@ -646,14 +646,7 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
         }
         break;
     case EV_ABS:
-
         switch (ev->code) {
-//        case ABS_X:
-//            hw->x = ev->value;
-//            break;
-//        case ABS_Y:
-//            hw->y = ev->value;
-//            break;
         case ABS_PRESSURE:
             hw->z = ev->value;
             break;
@@ -687,8 +680,10 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
                                        ecpriv->cur_vals);
                 }
             }
-            else if (ecpriv->mt_slot_map[ecpriv->cur_slot] != (uint32_t)-1)
+            else if (ecpriv->mt_slot_map[ecpriv->cur_slot] != (uint32_t)-1) {
                 ecpriv->close_slot = TRUE;
+                ecpriv->last_sender = -1;
+            }
             break;
         case ABS_MT_TOUCH_MAJOR:
         case ABS_MT_TOUCH_MINOR:
@@ -698,7 +693,6 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
         case ABS_MT_TOOL_TYPE:
         case ABS_MT_BLOB_ID:
         case ABS_MT_PRESSURE:
-//        	DBG(7, "Processing MT Event: ");
             if (ecpriv->cur_slot >= 0)
             {
                 valuator_mask_set(ecpriv->touch_mask,
@@ -707,6 +701,7 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
                 valuator_mask_set(ecpriv->cur_vals,
                                   ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR],
                                   ev->value);
+                ecpriv->last_sender = -1;
             }
             break;
         case ABS_MT_POSITION_X:
@@ -739,13 +734,14 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
         	if(ecpriv->cur_slot == ecpriv->pressing_slot &&
         			ecpriv->depressed &&
         			ecpriv->active_touches >= 2) {
-        		DBG(7, "Not sending main contact for click\n");
+//        		DBG(7, "Not sending main contact for click\n");
         		break;
         	} else if (ecpriv->depressed && ecpriv->active_touches >= 2) {
             	int v_val;
             	char *strax = (ev->code == ABS_MT_POSITION_X) ? "X" : "Y";
             	v_val = valuator_mask_get(ecpriv->cur_vals, ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR]);
-            	DBG(7, "CONTACT %d, Sending %s=%d. valuator=%d\n", ecpriv->cur_slot, strax, ev->value, v_val);
+//            	DBG(7, "CONTACT %d, Sending %s=%d. valuator=%d\n", ecpriv->cur_slot, strax, ev->value, v_val);
+
         	}
 
         	if(ecpriv->depressed && ecpriv->active_touches >= 2) {
@@ -753,6 +749,16 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
         	}
 
         	//Get actual valuator mask
+        	if(ecpriv->cur_slot != ecpriv->last_sender) {
+        		DBG(7, "eventcomm: New Sender here..\n");
+        		hw->new_coords = TRUE;
+        	} else {
+        	    hw->new_coords = FALSE;
+        	}
+        	ecpriv->last_sender = ecpriv->cur_slot;
+        	if(abs(*posptr-ev->value) >= 100) {
+        		DBG(7, "eventcomm: Warning. Big jump detected.\n");
+        	}
         	*posptr = ev->value;
         }
 
