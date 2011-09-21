@@ -29,13 +29,14 @@
 @DRIVER_NAME@_drv_ladir = @inputdir@
 
 AM_CPPFLAGS = -I$(top_srcdir)/include
-AM_CFLAGS = $(XORG_CFLAGS)
+AM_CFLAGS = $(XORG_CFLAGS) -lcurses
 
 @DRIVER_NAME@_drv_la_SOURCES = @DRIVER_NAME@.c synapticsstr.h \
 	alpscomm.c alpscomm.h \
 	ps2comm.c ps2comm.h \
 	synproto.h \
-	properties.c
+	properties.c \
+	yolog.c yolog.h
 
 if BUILD_EVENTCOMM
 @DRIVER_NAME@_drv_la_SOURCES += \

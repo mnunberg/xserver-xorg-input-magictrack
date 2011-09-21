@@ -1,3 +1,44 @@
+-- Notes on modified version for clickpads --
+
+This is currently unstable.
+This links against a logging library which uses ncurses for
+initialization. this is just for testing and will be removed
+once I know this isn't needed anymore.
+
+Two-finger scrolling is edgy if the bottom of the fingers
+suddenly touch the pad.
+
+Do not run make install. copy the driver manually from
+src/.libs/synaptics_drv.so as synaptics2_drv.so to your
+xorg module directory.
+
+I am using the following configuration in my xorg.conf
+	Identifier "Apple Wireless Trackpad"
+#	MatchIsTouchpad "on"
+	MatchUSBID "05ac:030e"
+	#	MatchDevicePath "/dev/input/event2"
+	Driver "synaptics2"
+	Option          "VertScrollDelta"  "75"
+	Option          "HorizScrollDelta" "75"
+	Option          "MinSpeed"         "0.6"
+	Option          "MaxSpeed"         "1.8" 
+	Option          "AccelFactor"      "0.15"
+	Option		"ClickFinger2"	"3"
+	Option		"HorizTwoFingerScroll" "1"
+	Option		"VertTwoFingerScroll" "1"
+	Option		"TapButton1"	"0"
+	Option		"TapButton2"	"0"
+	Option		"TapButton3"	"0"
+	# these two options are for multiple monitors 3:1 ratio.  
+	Option          "VertResolution"   "1"
+	Option          "HorizResolution"  "3"
+	#
+	Option "SHMConfig" "True"
+
+I have not tested it with any other type of configuration.
+
+Otherwise, have fun!
+
 Synaptics touchpad driver for X.Org
 -----------------------------------
 

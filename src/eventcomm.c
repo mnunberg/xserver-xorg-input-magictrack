@@ -44,6 +44,9 @@
 #include <xorg/xserver-properties.h>
 #include <mtdev.h>
 #include <grail.h>
+#include "yolog.h"
+
+YOLOG_STATIC_INIT("eventcomm.c", YOLOG_WARN);
 
 
 #define SYSCALL(call) while (((call) == -1) && (errno == EINTR))
@@ -53,6 +56,8 @@
 #define OFF(x)   ((x) % LONG_BITS)
 #define LONG(x)  ((x) / LONG_BITS)
 #define TEST_BIT(bit, array) ((array[LONG(bit)] >> OFF(bit)) & 1)
+
+#define SLOT_INACTIVE (uint32_t)-1
 
 /*****************************************************************************
  *	Function Definitions
@@ -98,12 +103,15 @@ EventDeviceInitHook(DeviceIntPtr dev)
     if (!priv->has_touch)
         return Success;
 
-    ecpriv->mt_slot_map = malloc(ecpriv->num_touches * sizeof(int));
-    if (!ecpriv->mt_slot_map)
+    ecpriv->slot_info = malloc(ecpriv->num_touches * sizeof(EC_SlotInfo));
+    if (!ecpriv->slot_info)
         goto err;
 
-    for (i = 0; i < ecpriv->num_touches; i++)
-        ecpriv->mt_slot_map[i] = -1;
+    memset(ecpriv->slot_info, 0, sizeof(EC_SlotInfo));
+
+    for (i = 0; i < ecpriv->num_touches; i++) {
+        ecpriv->slot_info[i].touch_id = -1;
+    }
 
     ecpriv->touch_mask = valuator_mask_new(ecpriv->num_mt_axes);
     ecpriv->cur_vals = valuator_mask_new(ecpriv->num_mt_axes);
@@ -152,8 +160,8 @@ EventDeviceInitHook(DeviceIntPtr dev)
     return Success;
 
 err:
-    free(ecpriv->mt_slot_map);
-    ecpriv->mt_slot_map = NULL;
+    free(ecpriv->slot_info);
+    ecpriv->slot_info = NULL;
     free(ecpriv->cur_vals);
     ecpriv->cur_vals = NULL;
     free(ecpriv->touch_mask);
@@ -203,7 +211,7 @@ EventDeviceCloseHook(DeviceIntPtr dev)
     SynapticsPrivate *priv = (SynapticsPrivate *) pInfo->private;
     EventcommPrivate *ecpriv = (EventcommPrivate *)priv->proto_data;
 
-    free(ecpriv->mt_slot_map);
+    free(ecpriv->slot_info);
     free(ecpriv->cur_vals);
     free(ecpriv->touch_mask);
     free(ecpriv);
@@ -457,12 +465,11 @@ static void
 ProcessTouch(InputInfoPtr pInfo, SynapticsPrivate *priv)
 {
     EventcommPrivate *ecpriv = (EventcommPrivate *)priv->proto_data;
+    EC_SlotInfo *slotp = &(ecpriv->slot_info[ecpriv->cur_slot]);
 
-    if (!priv->has_touch || ecpriv->cur_slot < 0 ||
-        ecpriv->mt_slot_map[ecpriv->cur_slot] == (uint32_t)-1)
+    if (!priv->has_touch || ecpriv->cur_slot < 0 || slotp->touch_id == SLOT_INACTIVE)
     {
         if (ecpriv->touch_mask) {
-//        	DBG(7, "Zeroing valuator mask\n");
             valuator_mask_zero(ecpriv->touch_mask);
         }
         return;
@@ -470,26 +477,18 @@ ProcessTouch(InputInfoPtr pInfo, SynapticsPrivate *priv)
 
     if (ecpriv->close_slot)
     {
-        if (!ecpriv->semi_mt) {
-        	;
-//            xf86PostTouchEvent(pInfo->dev,
-//                               ecpriv->mt_slot_map[ecpriv->cur_slot],
-//                               XI_TouchEnd, 0, ecpriv->touch_mask);
+        if ( (!ecpriv->semi_mt) && slotp->has_touch_event) {
+            xf86PostTouchEvent(pInfo->dev,
+                               slotp->touch_id,
+                               XI_TouchEnd, 0, ecpriv->touch_mask);
+            slotp->has_touch_event = FALSE;
         }
-        ecpriv->mt_slot_map[ecpriv->cur_slot] = -1;
+        slotp->touch_id = SLOT_INACTIVE;
         ecpriv->close_slot = FALSE;
         ecpriv->active_touches--;
     }
     else
     {
-//    	if(ecpriv->depressed && ecpriv->active_touches == 1) {
-//    		/*Second drag finger*/
-//    		DBG(7, "Detected second drag finger. Will try to prevent touch event\n");
-//    		if(ecpriv->new_touch) {
-//    			ecpriv->active_touches++;
-//    			ecpriv->new_touch = FALSE;
-//    		}
-//    	}
         if (ecpriv->new_touch)
         {
         	DBG(7, "Posting new touch event: Slot %d\n", ecpriv->cur_slot);
@@ -504,26 +503,87 @@ ProcessTouch(InputInfoPtr pInfo, SynapticsPrivate *priv)
                   (ecpriv->active_touches == 0 ||
                    is_inside_active_area(priv, ecpriv->max_x, ecpriv->max_y)))))
             {
-                if (!ecpriv->semi_mt)
-//                    xf86PostTouchEvent(pInfo->dev,
-//                                       ecpriv->mt_slot_map[ecpriv->cur_slot],
-//                                       XI_TouchBegin, 0, ecpriv->touch_mask);
-                ecpriv->active_touches++;
+                if (!ecpriv->semi_mt) {
+                	if(!ecpriv->depressed) {
+                		xf86PostTouchEvent(pInfo->dev,
+                				slotp->touch_id,
+                				XI_TouchBegin, 0, ecpriv->touch_mask);
+                		slotp->has_touch_event = TRUE;
+                	}
+                    ecpriv->active_touches++;
+                }
+                else {
+                	slotp->touch_id = SLOT_INACTIVE;
+                }
             }
-            else
-                ecpriv->mt_slot_map[ecpriv->cur_slot] = -1;
         }
-        else if (!ecpriv->semi_mt)
-        {
-//            xf86PostTouchEvent(pInfo->dev,
-//                               ecpriv->mt_slot_map[ecpriv->cur_slot],
-//                               XI_TouchUpdate, 0, ecpriv->touch_mask);
-        }
+		else if ( (!ecpriv->semi_mt) && slotp->has_touch_event )
+		{
+			xf86PostTouchEvent(pInfo->dev,
+					slotp->touch_id,
+					XI_TouchUpdate, 0, ecpriv->touch_mask);
+		}
 
         ecpriv->new_touch = FALSE;
     }
 
     valuator_mask_zero(ecpriv->touch_mask);
+}
+
+int GDB_watchpoint_hinter = 0;
+static void ProcessPosition(EventcommPrivate *ecpriv, const struct input_event *ev,
+		struct SynapticsHwState *hw, EC_SlotInfo *slotp)
+{
+	int *posptr, *contact_axis;
+
+	if(ev->code == ABS_MT_POSITION_X) {
+		posptr = &(hw->x);
+		contact_axis = &(slotp->history.x);
+	} else {
+		posptr = &(hw->y);
+		contact_axis = &(slotp->history.y);
+	}
+
+	*contact_axis = ev->value;
+
+	valuator_mask_set(ecpriv->touch_mask,
+					  ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR],
+					  ev->value);
+	valuator_mask_set(ecpriv->cur_vals,
+					  ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR],
+					  ev->value);
+
+
+	char *strax = (ev->code == ABS_MT_POSITION_X) ? "X" : "Y"; //debug stuff
+
+	if(ecpriv->cur_slot == ecpriv->pressing_slot
+			&& ecpriv->depressed
+			&& ecpriv->active_touches >= 2)
+	{
+    	yolog_debug("S=%2d %s=%6d. BLOCKED", ecpriv->cur_slot, strax, ev->value);
+    	return;
+	}
+
+	yolog_info("S=%2d %s=%6d. SENDING", ecpriv->cur_slot, strax, ev->value);
+	if(ecpriv->depressed && ecpriv->active_touches >= 2) {
+		GDB_watchpoint_hinter = !GDB_watchpoint_hinter;
+	}
+
+	//Get actual valuator mask
+	if(ecpriv->cur_slot != ecpriv->last_sender) {
+		yolog_info("New Sender here");
+		hw->new_coords = TRUE;
+		hw->x = slotp->history.x;
+		hw->y = slotp->history.y;
+
+	} else {
+	    hw->new_coords = FALSE;
+	}
+	ecpriv->last_sender = ecpriv->cur_slot;
+	if(abs(*posptr - ev->value) >= 100) {
+		yolog_warn("Warning. Big jump detected.");
+	}
+	*posptr = ev->value;
 }
 
 static Bool
@@ -534,7 +594,7 @@ SynapticsReadEvent(InputInfoPtr pInfo, struct input_event *ev)
     int rc = TRUE;
     ssize_t len;
 //    ecpriv->grail = NULL;
-    int use_grail = ecpriv->grail;
+    int use_grail = (ecpriv->grail != NULL);
     if (use_grail) {
         len = grail_pull(ecpriv->grail, pInfo->fd);
     }
@@ -556,7 +616,6 @@ SynapticsReadEvent(InputInfoPtr pInfo, struct input_event *ev)
     return rc;
 }
 
-int GDB_watchpoint_hinter = 0;
 
 Bool
 EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
@@ -567,6 +626,13 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
     SynapticsParameters *para = &priv->synpara;
     struct SynapticsHwState *hw = &(comm->hwState);
     Bool v;
+    EC_SlotInfo *slotp;
+    EC_SlotInfo stack_dummy;
+    if(ecpriv->cur_slot >= 0) {
+    	slotp = &(ecpriv->slot_info[ecpriv->cur_slot]);
+    } else {
+    	slotp = &stack_dummy;
+    }
 
     switch (ev->type) {
     case EV_SYN:
@@ -666,23 +732,24 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
                 break;
             if (ev->value >= 0)
             {
-                if (ecpriv->mt_slot_map[ecpriv->cur_slot] != (uint32_t)-1)
+                if (slotp->touch_id != SLOT_INACTIVE)
                 {
                     xf86Msg(X_WARNING, "%s: Ignoring new tracking ID for "
                             "existing touch.\n", pInfo->dev->name);
                 }
                 else
                 {
-                    ecpriv->mt_slot_map[ecpriv->cur_slot] =
-                        ecpriv->next_touch_id++;
+                	slotp->touch_id = ecpriv->next_touch_id++;
                     ecpriv->new_touch = TRUE;
                     valuator_mask_copy(ecpriv->touch_mask,
                                        ecpriv->cur_vals);
                 }
             }
-            else if (ecpriv->mt_slot_map[ecpriv->cur_slot] != (uint32_t)-1) {
+            else if (slotp->touch_id != SLOT_INACTIVE) {
                 ecpriv->close_slot = TRUE;
-                ecpriv->last_sender = -1;
+                if(ecpriv->last_sender == ecpriv->cur_slot) {
+                	ecpriv->last_sender = -1;
+                }
             }
             break;
         case ABS_MT_TOUCH_MAJOR:
@@ -701,70 +768,18 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
                 valuator_mask_set(ecpriv->cur_vals,
                                   ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR],
                                   ev->value);
-                ecpriv->last_sender = -1;
             }
             break;
         case ABS_MT_POSITION_X:
         case ABS_MT_POSITION_Y: {
-
-        	int *posptr, *contact_axis;
-        	if(ev->code == ABS_MT_POSITION_X) {
-        		posptr = &(hw->x);
-        		contact_axis = ecpriv->contact_x;
-        	} else {
-        		posptr = &(hw->y);
-        		contact_axis = ecpriv->contact_y;
-        	}
-
-        	if(ecpriv->cur_slot >= HIST_SLOT_MAX) {
+        	if(ecpriv->cur_slot < 0) {
         		break;
         	}
-            if (ecpriv->cur_slot >= 0)
-            {
-
-                valuator_mask_set(ecpriv->touch_mask,
-                                  ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR],
-                                  ev->value);
-                valuator_mask_set(ecpriv->cur_vals,
-                                  ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR],
-                                  ev->value);
-
-            }
-
-        	if(ecpriv->cur_slot == ecpriv->pressing_slot &&
-        			ecpriv->depressed &&
-        			ecpriv->active_touches >= 2) {
-//        		DBG(7, "Not sending main contact for click\n");
-        		break;
-        	} else if (ecpriv->depressed && ecpriv->active_touches >= 2) {
-            	int v_val;
-            	char *strax = (ev->code == ABS_MT_POSITION_X) ? "X" : "Y";
-            	v_val = valuator_mask_get(ecpriv->cur_vals, ecpriv->mt_axis_map[ev->code - ABS_MT_TOUCH_MAJOR]);
-//            	DBG(7, "CONTACT %d, Sending %s=%d. valuator=%d\n", ecpriv->cur_slot, strax, ev->value, v_val);
-
-        	}
-
-        	if(ecpriv->depressed && ecpriv->active_touches >= 2) {
-        		GDB_watchpoint_hinter = !GDB_watchpoint_hinter;
-        	}
-
-        	//Get actual valuator mask
-        	if(ecpriv->cur_slot != ecpriv->last_sender) {
-        		DBG(7, "eventcomm: New Sender here..\n");
-        		hw->new_coords = TRUE;
-        	} else {
-        	    hw->new_coords = FALSE;
-        	}
-        	ecpriv->last_sender = ecpriv->cur_slot;
-        	if(abs(*posptr-ev->value) >= 100) {
-        		DBG(7, "eventcomm: Warning. Big jump detected.\n");
-        	}
-        	*posptr = ev->value;
+        	ProcessPosition(ecpriv, ev, hw, slotp);
         }
 
-        }
-        break;
-    }
+    } /*switch(ev->code)*/
+    } /*switch(ev->type)*/
 
     return FALSE;
 }

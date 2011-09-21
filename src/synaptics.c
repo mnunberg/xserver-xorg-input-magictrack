@@ -80,6 +80,10 @@
 #include <ptrveloc.h>
 #endif
 
+#include "yolog.h"
+
+YOLOG_STATIC_INIT("synaptics.c", YOLOG_DEBUG);
+
 typedef enum {
     NO_EDGE = 0,
     BOTTOM_EDGE = 1,
@@ -1814,7 +1818,7 @@ get_delta(SynapticsPrivate *priv, const struct SynapticsHwState *hw,
     double tmpf;
     int x_edge_speed = 0;
     int y_edge_speed = 0;
-
+//    yolog_debug("Last: X=%d, Y=%d", HIST(0).x, HIST(0).y);
     /* HIST is full enough: priv->count_packet_finger > 3 */
     *dx = estimate_delta(hw->x, HIST(0).x, HIST(1).x, HIST(2).x);
     *dy = estimate_delta(hw->y, HIST(0).y, HIST(1).y, HIST(2).y);
@@ -1873,9 +1877,10 @@ ComputeDeltas(SynapticsPrivate *priv, const struct SynapticsHwState *hw,
     		priv->circ_scroll_on || priv->prevFingers != hw->numFingers
 	)
     {
-    	if(hw->new_coords) {
-    		DBG(7, "ComputeDeltas: new_coords set\n");
-    	}
+//    	yolog_debug("Resetting packet counter for some reason");
+//    	if(hw->new_coords) {
+//    		yolog_debug("new_coords set");
+//    	}
         /* reset packet counter. */
         priv->count_packet_finger = 0;
         goto out;
@@ -1892,13 +1897,15 @@ ComputeDeltas(SynapticsPrivate *priv, const struct SynapticsHwState *hw,
         get_delta_for_trackstick(priv, hw, &dx, &dy);
     else if (moving_state == MS_TOUCHPAD_RELATIVE)
         get_delta(priv, hw, edge, &dx, &dy);
+    else
+    	yolog_debug("Moving state is %d, not calling get_delta()", moving_state);
 
 skip:
     priv->count_packet_finger++;
 out:
     priv->prevFingers = hw->numFingers;
     if(abs(dx) > 200 || abs(dy) > 200) {
-    	DBG(7, "ComputeDeltas: Still returning large value. dx=%0.5f, dy=%0.5f\n", dx, dy);
+    	yolog_warn("Still returning large value. dx=%0.5f, dy=%0.5f", dx, dy);
     }
     *dxP = dx;
     *dyP = dy;
@@ -2555,10 +2562,9 @@ HandleState(InputInfoPtr pInfo, struct SynapticsHwState *hw)
     /* Post events */
     if (finger > FS_UNTOUCHED) {
         if (priv->absolute_events && inside_active_area) {
-        	DBG(7, "ABS: Posting %d,%d\n",hw->x, hw->y );
             xf86PostMotionEvent(pInfo->dev, 1, 0, 2, hw->x, hw->y);
         } else if (dx || dy) {
-//        	DBG(7, "REL: Posting %d,%d\n", dx, dy );
+//        	yolog_debug("Posting MotionEvent: %d,%d", dx,dy);
             xf86PostMotionEvent(pInfo->dev, 0, 0, 2, dx, dy);
 
         }

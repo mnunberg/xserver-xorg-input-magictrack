@@ -45,12 +45,21 @@ struct mtdev;
 struct grail;
 
 typedef struct {
+	uint32_t touch_id;
+	struct {
+		int x;
+		int y;
+	} history;
+	Bool has_touch_event;
+} EC_SlotInfo;
+
+typedef struct {
     BOOL need_grab;
     unsigned long absbits[ABS_CNT];
     struct input_absinfo absinfo[ABS_CNT];
     int mt_axis_map[ABS_MT_DISTANCE - ABS_MT_TOUCH_MAJOR];
     int cur_slot;
-    uint32_t *mt_slot_map;
+    EC_SlotInfo *slot_info;
     Bool close_slot;
     uint32_t next_touch_id;
     ValuatorMask *touch_mask;
@@ -71,8 +80,6 @@ typedef struct {
     Bool depressed;
     int pressing_slot;
     int last_sender;
-    int contact_x[HIST_SLOT_MAX];
-    int contact_y[HIST_SLOT_MAX];
 } EventcommPrivate;
 
 extern Bool EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
