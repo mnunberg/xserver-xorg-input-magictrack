@@ -1984,6 +1984,9 @@ finger_scroll_update(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	SynapticsFinger **fingers = hw->scroll_fingers;
 	Bool *fsel = hw->scroll_pass_y;
 
+	if(fingers[0] == NULL || fingers[1] == NULL) {
+		return;
+	}
 	if(fsel[0] == FALSE && fsel[1] == FALSE) {
 		yolog_debug("Didn't get anything useful. Returning");
 	}
@@ -2019,28 +2022,28 @@ finger_scroll_update(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	}
 
 	*yp = pos_avg;
-
 	GT_UPDATE:
 
+	if(log[SYNHIST_IDX_AVG].count >= 10)
 	{
-	int para_delta = priv->synpara.scroll_dist_vert;
-	yolog_warn("pos_avg=%d", pos_avg);
-	int n_up, n_down;
-	int diff = abs(pos_avg - priv->scroll_y);
+		int para_delta = priv->synpara.scroll_dist_vert;
+		yolog_warn("pos_avg=%d", pos_avg);
+		int n_up = 0, n_down = 0;
+		int diff = abs(pos_avg - priv->scroll_y);
 
-	while(pos_avg - priv->scroll_y > para_delta) {
-		n_down++;
-		priv->scroll_y += para_delta;
-	}
-	while(pos_avg - priv->scroll_y < -para_delta) {
-		n_up++;
-		priv->scroll_y -= para_delta;
-	}
-	if(n_down > n_up) {
-		sd->down += n_down;
-	} else if (n_up > n_down) {
-		sd->up += n_up;
-	}
+		while(pos_avg - priv->scroll_y > para_delta) {
+			n_down++;
+			priv->scroll_y += para_delta;
+		}
+		while(pos_avg - priv->scroll_y < -para_delta) {
+			n_up++;
+			priv->scroll_y -= para_delta;
+		}
+		if(n_down > n_up) {
+			sd->down += n_down;
+		} else if (n_up > n_down) {
+			sd->up += n_up;
+		}
 
 	}
 	GT_LOG:
@@ -2055,7 +2058,6 @@ finger_scroll_update(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	if(pos_avg == POS_OOB) {
 		return;
 	}
-	yolog_info("Msec: %d", hw->millis);
 	synhist_set(&(log[SYNHIST_IDX_AVG]), pos_avg, hw->millis);
 }
 
@@ -2210,12 +2212,10 @@ HandleScrolling(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	    if (priv->vert_scroll_twofinger_on) {
 		DBG(7, "vert two-finger scroll off\n");
 		finger_scroll_on_end(priv, _AXIS_Y);
-//		priv->vert_scroll_twofinger_on = FALSE;
 	    }
 	    if (priv->horiz_scroll_twofinger_on) {
 		DBG(7, "horiz two-finger scroll off\n");
 		finger_scroll_on_end(priv, _AXIS_X);
-//		priv->horiz_scroll_twofinger_on = FALSE;
 	    }
 	}
 

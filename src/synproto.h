@@ -78,6 +78,8 @@ struct SynapticsHwState {
 
     SynapticsFinger *scroll_fingers[2];
     SynapticsFinger *pressing_finger; /*Which finger is currently holding the mouse*/
+
+    /*This is sorta like select(2)*/
     Bool scroll_pass_x[2];	/*Indexed by finger. Whether we updated X in this resultset*/
     Bool scroll_pass_y[2];	/*Same, but for Y*/
 
