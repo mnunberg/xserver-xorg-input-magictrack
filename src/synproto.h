@@ -48,14 +48,21 @@ typedef enum  {
 	MOTION_HORIZ_RIGHT
 } SynapticsHorizDirection;
 
+typedef enum {
+	SYNMETRIC_X = 0,
+	SYNMETRIC_Y = 1,
+} SynapticsMetric;
+
+#define SYNAPTICS_METRIC_COUNT 2
+
 typedef struct {
 	/*Coordinates*/
-	int x;
-	int y;
+	int metric[SYNAPTICS_METRIC_COUNT];
 	int finger_id; /*Slot ID*/
 	uint32_t tracking_id;
 	Bool has_touch_event;
 } SynapticsFinger;
+
 
 /*
  * A structure to describe the state of the touchpad hardware (buttons and pad)
@@ -80,8 +87,9 @@ struct SynapticsHwState {
     SynapticsFinger *pressing_finger; /*Which finger is currently holding the mouse*/
 
     /*This is sorta like select(2)*/
-    Bool scroll_pass_x[2];	/*Indexed by finger. Whether we updated X in this resultset*/
-    Bool scroll_pass_y[2];	/*Same, but for Y*/
+    Bool scroll_pass[SYNAPTICS_METRIC_COUNT][2]; /*By metric, by finger*/
+//    Bool scroll_pass_x[2];	/*Indexed by finger. Whether we updated X in this resultset*/
+//    Bool scroll_pass_y[2];	/*Same, but for Y*/
 
     Bool new_coords;	/*If we want to restart mapping here*/
     Bool new_eventset;	/*False if we are in the middle of a partial update*/

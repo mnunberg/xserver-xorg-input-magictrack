@@ -539,15 +539,15 @@ static void ProcessPosition(EventcommPrivate *ecpriv,
 		struct SynapticsHwState *hw, SynapticsFinger *slotp)
 {
 	int *posptr, *contact_axis;
-
+	SynapticsMetric m;
 	if(ev->code == ABS_MT_POSITION_X) {
+		m = SYNMETRIC_X;
 		posptr = &(hw->x);
-		contact_axis = &(slotp->x);
 	} else {
+		m = SYNMETRIC_Y;
 		posptr = &(hw->y);
-		contact_axis = &(slotp->y);
 	}
-
+	contact_axis = &(slotp->metric[m]);
 	*contact_axis = ev->value;
 
 	valuator_mask_set(ecpriv->touch_mask,
@@ -576,8 +576,8 @@ static void ProcessPosition(EventcommPrivate *ecpriv,
 	if(ecpriv->cur_slot != ecpriv->last_sender) {
 //		yolog_warn("New Sender here");
 		hw->new_coords = TRUE;
-		hw->x = slotp->x;
-		hw->y = slotp->y;
+		hw->x = slotp->metric[SYNMETRIC_X];
+		hw->y = slotp->metric[SYNMETRIC_Y];
 
 	} else {
 	    hw->new_coords = FALSE;
@@ -599,16 +599,9 @@ static void ProcessPosition(EventcommPrivate *ecpriv,
 			hw->scroll_fingers[1] = slotp;
 		}
 		int fidx = (ecpriv->cur_slot == ecpriv->first_2f_scrollid) ? 0 : 1;
-		Bool *passptr = NULL;
-		if(ev->code == ABS_MT_POSITION_X) {
-			passptr = &(hw->scroll_pass_x[fidx]);
-		} else {
-			passptr = &(hw->scroll_pass_y[fidx]);
-		}
-		*passptr = TRUE;
+		hw->scroll_pass[m][fidx] = TRUE;
 	} else {
-		memset(hw->scroll_pass_x, 0, sizeof(Bool)*2);
-		memset(hw->scroll_pass_y, 0, sizeof(Bool)*2);
+		memset(hw->scroll_pass, 0, sizeof(hw->scroll_pass));
 
 		/*2f-scroll off. Reset*/
 		ecpriv->first_2f_scrollid = ecpriv->second_2f_scrollid = SCROLL_INACTIVE;
@@ -663,8 +656,7 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
     if(hw->new_eventset) {
     	/*Reset scroll data*/
     	hw->new_eventset = FALSE;
-		memset(hw->scroll_pass_x, 0, sizeof(Bool)*2);
-		memset(hw->scroll_pass_y, 0, sizeof(Bool)*2);
+    	memset(hw->scroll_pass, 0, sizeof(hw->scroll_pass));
 
     	if(ecpriv->first_2f_scrollid == SCROLL_INACTIVE) {
     		hw->scroll_fingers[0] = NULL;

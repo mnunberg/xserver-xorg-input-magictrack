@@ -209,9 +209,10 @@ typedef struct _SynapticsPrivateRec
     SynapticsMoveHistRec move_hist[SYNAPTICS_MOVE_HISTORY]; /* movement history */
 
     /*First is f1, second is f2, third is averages*/
-    SynhistLog scroll_hist_y[3];
-    SynhistLog scroll_hist_x[3];
+//    SynhistLog scroll_hist_y[3];
+//    SynhistLog scroll_hist_x[3];
 
+    SynhistLog scroll_hist[SYNAPTICS_METRIC_COUNT][3];
     int hist_index;			/* Last added entry in move_hist[] */
     int hyst_center_x;			/* center x of hysteresis*/
     int hyst_center_y;			/* center y of hysteresis*/

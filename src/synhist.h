@@ -7,7 +7,7 @@
 #define SYNHIST_OOB INT32_MAX;
 #define SYNHIST_DATA_MAX 4
 
-#define SYNHIST_IDX_AVG 3
+#define SYNHIST_IDX_AVG 2
 /*
  * Each finger has X and Y coordinates.
  *
