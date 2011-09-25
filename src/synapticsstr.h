@@ -25,6 +25,7 @@
 #include <linux/input.h>
 
 #include "synproto.h"
+#include "synhist.h"
 
 #define DEBUG
 #ifdef DBG
@@ -42,7 +43,13 @@
  *		Definitions
  *					structs, typedefs, #defines, enums
  *****************************************************************************/
-#define SYNAPTICS_MOVE_HISTORY	5
+#define SYNAPTICS_MOVE_HISTORY	10
+#define SYNAPTICS_TWOFINGER_WEIGHT 32
+#define SYNAPTICS_FINGERSHIFT_SLOWDOWN 5;
+#define POS_OOB 999999
+#define SCROLL_IDX_Y_AVG 0
+#define SCROLL_IDX_X_AVG 1
+
 
 typedef struct _SynapticsMoveHist
 {
@@ -168,6 +175,17 @@ typedef struct _SynapticsParameters
 
 } SynapticsParameters;
 
+typedef struct {
+	int x[SYNAPTICS_MOVE_HISTORY];
+	int y[SYNAPTICS_MOVE_HISTORY];
+	int count;
+} SynapticsScrollHistRec;
+
+typedef struct {
+	int count;
+	int value[2][SYNAPTICS_MOVE_HISTORY];
+	int counter[2];
+} SynapticsScrollAvg;
 
 typedef struct _SynapticsPrivateRec
 {
@@ -187,14 +205,27 @@ typedef struct _SynapticsPrivateRec
     struct CommData comm;
 
     Bool absolute_events;               /* post absolute motion events instead of relative */
+
     SynapticsMoveHistRec move_hist[SYNAPTICS_MOVE_HISTORY]; /* movement history */
+
+    /*First is f1, second is f2, third is averages*/
+    SynhistLog scroll_hist_y[3];
+    SynhistLog scroll_hist_x[3];
+
     int hist_index;			/* Last added entry in move_hist[] */
     int hyst_center_x;			/* center x of hysteresis*/
     int hyst_center_y;			/* center y of hysteresis*/
     int scroll_y;			/* last y-scroll position */
     int scroll_x;			/* last x-scroll position */
     double scroll_a;			/* last angle-scroll position */
+
     int count_packet_finger;		/* packet counter with finger on the touchpad */
+
+    /*Packet counters for scroll history*/
+    int count_scroll_finger;
+    int scroll_last_delta_y;
+    int scroll_last_delta_x;
+
     int button_delay_millis;		/* button delay for 3rd button emulation */
     Bool prev_up;			/* Previous up button value, for double click emulation */
     enum FingerState finger_state;	/* previous finger state */
@@ -250,6 +281,7 @@ typedef struct _SynapticsPrivateRec
 
     /*Apple magic trackpad parameters*/
     int amt_last_action;
+    float amt_shift_slowdown; /*A factor by which we divide the delta, if there is a change during a click*/
 
 
 

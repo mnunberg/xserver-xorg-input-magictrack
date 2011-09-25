@@ -313,7 +313,7 @@ static void GrailGesture(struct grail *grail, const struct grail_event *ev)
     /* Note: Master device valuators are in screen coordinates */
     x = master->last.valuators[0];
     y = master->last.valuators[1];
-
+    DBG(7, "Posting gesture event\n");
     xf86PostGestureEvent(pInfo->dev, x, y, ev->client_id.client, ev->id,
                          ev->type, ev->client_id.root, ev->client_id.event,
                          ev->client_id.child, ev->status,

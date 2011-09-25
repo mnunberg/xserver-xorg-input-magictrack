@@ -32,6 +32,31 @@
 #include <xf86Xinput.h>
 #include <xisb.h>
 
+/*A structure to keep complete history of scroll movements for each of
+ * the two scroll fingers
+ */
+
+typedef enum  {
+	MOTION_VERT_UNKNOWN = 0,
+	MOTION_VERT_UP,
+	MOTION_VERT_DOWN,
+} SynapticsVertDirection;
+
+typedef enum  {
+	MOTION_HORIZ_UNKNOWN = 0,
+	MOTION_HORIZ_LEFT,
+	MOTION_HORIZ_RIGHT
+} SynapticsHorizDirection;
+
+typedef struct {
+	/*Coordinates*/
+	int x;
+	int y;
+	int finger_id; /*Slot ID*/
+	uint32_t tracking_id;
+	Bool has_touch_event;
+} SynapticsFinger;
+
 /*
  * A structure to describe the state of the touchpad hardware (buttons and pad)
  */
@@ -51,7 +76,13 @@ struct SynapticsHwState {
     Bool multi[8];
     Bool middle;		/* Some ALPS touchpads have a middle button */
 
+    SynapticsFinger *scroll_fingers[2];
+    SynapticsFinger *pressing_finger; /*Which finger is currently holding the mouse*/
+    Bool scroll_pass_x[2];	/*Indexed by finger. Whether we updated X in this resultset*/
+    Bool scroll_pass_y[2];	/*Same, but for Y*/
+
     Bool new_coords;	/*If we want to restart mapping here*/
+    Bool new_eventset;	/*False if we are in the middle of a partial update*/
 };
 
 struct CommData {

@@ -58,6 +58,10 @@ YOLOG_STATIC_INIT("eventcomm.c", YOLOG_WARN);
 #define TEST_BIT(bit, array) ((array[LONG(bit)] >> OFF(bit)) & 1)
 
 #define SLOT_INACTIVE (uint32_t)-1
+#define SCROLL_INACTIVE -1
+#define scroll_2f_active(ecp) \
+	((ecp->active_touches == 2 && ecp->depressed == FALSE ) \
+			|| (ecp->active_touches == 3 && ecp->depressed == TRUE))
 
 /*****************************************************************************
  *	Function Definitions
@@ -103,14 +107,14 @@ EventDeviceInitHook(DeviceIntPtr dev)
     if (!priv->has_touch)
         return Success;
 
-    ecpriv->slot_info = malloc(ecpriv->num_touches * sizeof(EC_SlotInfo));
+    ecpriv->slot_info = malloc(ecpriv->num_touches * sizeof(SynapticsFinger));
     if (!ecpriv->slot_info)
         goto err;
 
-    memset(ecpriv->slot_info, 0, sizeof(EC_SlotInfo));
+    memset(ecpriv->slot_info, 0, sizeof(SynapticsFinger));
 
     for (i = 0; i < ecpriv->num_touches; i++) {
-        ecpriv->slot_info[i].touch_id = -1;
+        ecpriv->slot_info[i].tracking_id = -1;
     }
 
     ecpriv->touch_mask = valuator_mask_new(ecpriv->num_mt_axes);
@@ -465,9 +469,9 @@ static void
 ProcessTouch(InputInfoPtr pInfo, SynapticsPrivate *priv)
 {
     EventcommPrivate *ecpriv = (EventcommPrivate *)priv->proto_data;
-    EC_SlotInfo *slotp = &(ecpriv->slot_info[ecpriv->cur_slot]);
+    SynapticsFinger *slotp = &(ecpriv->slot_info[ecpriv->cur_slot]);
 
-    if (!priv->has_touch || ecpriv->cur_slot < 0 || slotp->touch_id == SLOT_INACTIVE)
+    if (!priv->has_touch || ecpriv->cur_slot < 0 || slotp->tracking_id == SLOT_INACTIVE)
     {
         if (ecpriv->touch_mask) {
             valuator_mask_zero(ecpriv->touch_mask);
@@ -479,11 +483,11 @@ ProcessTouch(InputInfoPtr pInfo, SynapticsPrivate *priv)
     {
         if ( (!ecpriv->semi_mt) && slotp->has_touch_event) {
             xf86PostTouchEvent(pInfo->dev,
-                               slotp->touch_id,
+                               slotp->tracking_id,
                                XI_TouchEnd, 0, ecpriv->touch_mask);
             slotp->has_touch_event = FALSE;
         }
-        slotp->touch_id = SLOT_INACTIVE;
+        slotp->tracking_id = SLOT_INACTIVE;
         ecpriv->close_slot = FALSE;
         ecpriv->active_touches--;
     }
@@ -491,7 +495,6 @@ ProcessTouch(InputInfoPtr pInfo, SynapticsPrivate *priv)
     {
         if (ecpriv->new_touch)
         {
-        	DBG(7, "Posting new touch event: Slot %d\n", ecpriv->cur_slot);
             int x_axis = ecpriv->mt_axis_map[ABS_MT_POSITION_X - ABS_MT_TOUCH_MAJOR];
             int y_axis = ecpriv->mt_axis_map[ABS_MT_POSITION_Y - ABS_MT_TOUCH_MAJOR];
             int x = valuator_mask_get(ecpriv->touch_mask, x_axis);
@@ -506,21 +509,21 @@ ProcessTouch(InputInfoPtr pInfo, SynapticsPrivate *priv)
                 if (!ecpriv->semi_mt) {
                 	if(!ecpriv->depressed) {
                 		xf86PostTouchEvent(pInfo->dev,
-                				slotp->touch_id,
+                				slotp->tracking_id,
                 				XI_TouchBegin, 0, ecpriv->touch_mask);
                 		slotp->has_touch_event = TRUE;
                 	}
                     ecpriv->active_touches++;
                 }
                 else {
-                	slotp->touch_id = SLOT_INACTIVE;
+                	slotp->tracking_id = SLOT_INACTIVE;
                 }
             }
         }
 		else if ( (!ecpriv->semi_mt) && slotp->has_touch_event )
 		{
 			xf86PostTouchEvent(pInfo->dev,
-					slotp->touch_id,
+					slotp->tracking_id,
 					XI_TouchUpdate, 0, ecpriv->touch_mask);
 		}
 
@@ -531,17 +534,18 @@ ProcessTouch(InputInfoPtr pInfo, SynapticsPrivate *priv)
 }
 
 int GDB_watchpoint_hinter = 0;
-static void ProcessPosition(EventcommPrivate *ecpriv, const struct input_event *ev,
-		struct SynapticsHwState *hw, EC_SlotInfo *slotp)
+static void ProcessPosition(EventcommPrivate *ecpriv,
+		const struct input_event *ev,
+		struct SynapticsHwState *hw, SynapticsFinger *slotp)
 {
 	int *posptr, *contact_axis;
 
 	if(ev->code == ABS_MT_POSITION_X) {
 		posptr = &(hw->x);
-		contact_axis = &(slotp->history.x);
+		contact_axis = &(slotp->x);
 	} else {
 		posptr = &(hw->y);
-		contact_axis = &(slotp->history.y);
+		contact_axis = &(slotp->y);
 	}
 
 	*contact_axis = ev->value;
@@ -564,26 +568,52 @@ static void ProcessPosition(EventcommPrivate *ecpriv, const struct input_event *
     	return;
 	}
 
-	yolog_info("S=%2d %s=%6d. SENDING", ecpriv->cur_slot, strax, ev->value);
+//	yolog_warn("S=%2d %s=%6d. SENDING", ecpriv->cur_slot, strax, ev->value);
 	if(ecpriv->depressed && ecpriv->active_touches >= 2) {
 		GDB_watchpoint_hinter = !GDB_watchpoint_hinter;
 	}
 
-	//Get actual valuator mask
 	if(ecpriv->cur_slot != ecpriv->last_sender) {
-		yolog_info("New Sender here");
+//		yolog_warn("New Sender here");
 		hw->new_coords = TRUE;
-		hw->x = slotp->history.x;
-		hw->y = slotp->history.y;
+		hw->x = slotp->x;
+		hw->y = slotp->y;
 
 	} else {
 	    hw->new_coords = FALSE;
 	}
 	ecpriv->last_sender = ecpriv->cur_slot;
-	if(abs(*posptr - ev->value) >= 100) {
-		yolog_warn("Warning. Big jump detected.");
-	}
+
 	*posptr = ev->value;
+
+	if(scroll_2f_active(ecpriv)) {
+		/*If we have two finger scrolling on, set the fingers.*/
+		if(ecpriv->first_2f_scrollid == SCROLL_INACTIVE) {
+			ecpriv->first_2f_scrollid = ecpriv->cur_slot;
+			hw->scroll_fingers[0] = slotp;
+			hw->scroll_fingers[1] = NULL;
+			ecpriv->second_2f_scrollid = SCROLL_INACTIVE;
+		} else if (ecpriv->second_2f_scrollid == SCROLL_INACTIVE &&
+				ecpriv->first_2f_scrollid != ecpriv->cur_slot) {
+			ecpriv->second_2f_scrollid = ecpriv->cur_slot;
+			hw->scroll_fingers[1] = slotp;
+		}
+		int fidx = (ecpriv->cur_slot == ecpriv->first_2f_scrollid) ? 0 : 1;
+		Bool *passptr = NULL;
+		if(ev->code == ABS_MT_POSITION_X) {
+			passptr = &(hw->scroll_pass_x[fidx]);
+		} else {
+			passptr = &(hw->scroll_pass_y[fidx]);
+		}
+		*passptr = TRUE;
+	} else {
+		memset(hw->scroll_pass_x, 0, sizeof(Bool)*2);
+		memset(hw->scroll_pass_y, 0, sizeof(Bool)*2);
+
+		/*2f-scroll off. Reset*/
+		ecpriv->first_2f_scrollid = ecpriv->second_2f_scrollid = SCROLL_INACTIVE;
+		hw->scroll_fingers[0] = hw->scroll_fingers[1] = NULL;
+	}
 }
 
 static Bool
@@ -626,13 +656,30 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
     SynapticsParameters *para = &priv->synpara;
     struct SynapticsHwState *hw = &(comm->hwState);
     Bool v;
-    EC_SlotInfo *slotp;
-    EC_SlotInfo stack_dummy;
+    Bool ret = FALSE;
+    SynapticsFinger *slotp;
+    SynapticsFinger stack_dummy;
+
+    if(hw->new_eventset) {
+    	/*Reset scroll data*/
+    	hw->new_eventset = FALSE;
+		memset(hw->scroll_pass_x, 0, sizeof(Bool)*2);
+		memset(hw->scroll_pass_y, 0, sizeof(Bool)*2);
+
+    	if(ecpriv->first_2f_scrollid == SCROLL_INACTIVE) {
+    		hw->scroll_fingers[0] = NULL;
+    	}
+    	if(ecpriv->second_2f_scrollid == SCROLL_INACTIVE) {
+    		hw->scroll_fingers[1] = NULL;
+    	}
+    }
+
     if(ecpriv->cur_slot >= 0) {
     	slotp = &(ecpriv->slot_info[ecpriv->cur_slot]);
     } else {
     	slotp = &stack_dummy;
     }
+
 
     switch (ev->type) {
     case EV_SYN:
@@ -650,7 +697,7 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
             else
                 hw->numFingers = 0;
             *hwRet = *hw;
-            return TRUE;
+            ret = TRUE;
         }
     case EV_KEY:
         v = (ev->value ? TRUE : FALSE);
@@ -659,6 +706,11 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
             hw->left = v;
             ecpriv->depressed = v;
             ecpriv->pressing_slot = ecpriv->cur_slot;
+            if(v == TRUE) {
+            	hw->pressing_finger = slotp;
+            } else {
+            	hw->pressing_finger = NULL;
+            }
             break;
         case BTN_RIGHT:
             hw->right = v;
@@ -732,20 +784,22 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
                 break;
             if (ev->value >= 0)
             {
-                if (slotp->touch_id != SLOT_INACTIVE)
+                if (slotp->tracking_id != SLOT_INACTIVE)
                 {
                     xf86Msg(X_WARNING, "%s: Ignoring new tracking ID for "
                             "existing touch.\n", pInfo->dev->name);
                 }
                 else
                 {
-                	slotp->touch_id = ecpriv->next_touch_id++;
+                	slotp->finger_id = ecpriv->cur_slot;
+                	slotp->tracking_id = ecpriv->next_tracking_id++;
                     ecpriv->new_touch = TRUE;
                     valuator_mask_copy(ecpriv->touch_mask,
                                        ecpriv->cur_vals);
                 }
             }
-            else if (slotp->touch_id != SLOT_INACTIVE) {
+            else if (slotp->tracking_id != SLOT_INACTIVE) {
+            	slotp->finger_id = -1;
                 ecpriv->close_slot = TRUE;
                 if(ecpriv->last_sender == ecpriv->cur_slot) {
                 	ecpriv->last_sender = -1;
@@ -781,7 +835,11 @@ EventProcessEvent(InputInfoPtr pInfo, struct CommData *comm,
     } /*switch(ev->code)*/
     } /*switch(ev->type)*/
 
-    return FALSE;
+    if(ret == TRUE) {
+    	/*Signal that the next update of the hw struct is part of a new eventset*/
+    	hw->new_eventset = TRUE;
+    }
+    return ret;
 }
 
 static Bool

@@ -36,7 +36,8 @@ AM_CFLAGS = $(XORG_CFLAGS) -lcurses
 	ps2comm.c ps2comm.h \
 	synproto.h \
 	properties.c \
-	yolog.c yolog.h
+	synhist.c synhist.h \
+	yolog.c yolog.h 
 
 if BUILD_EVENTCOMM
 @DRIVER_NAME@_drv_la_SOURCES += \

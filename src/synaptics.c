@@ -80,6 +80,7 @@
 #include <ptrveloc.h>
 #endif
 
+#include "synhist.h"
 #include "yolog.h"
 
 YOLOG_STATIC_INIT("synaptics.c", YOLOG_DEBUG);
@@ -186,6 +187,8 @@ _X_EXPORT XF86ModuleData synaptics2ModuleData = {
  * The default values 1900, etc. come from the dawn of time, when men where
  * men, or possibly apes.
  */
+
+
 void
 SynapticsDefaultDimensions(InputInfoPtr pInfo)
 {
@@ -1712,6 +1715,7 @@ HandleTapProcessing(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 
 #define HIST(a) (priv->move_hist[((priv->hist_index - (a) + SYNAPTICS_MOVE_HISTORY) % SYNAPTICS_MOVE_HISTORY)])
 
+
 static void
 store_history(SynapticsPrivate *priv, int x, int y, unsigned int millis)
 {
@@ -1877,11 +1881,6 @@ ComputeDeltas(SynapticsPrivate *priv, const struct SynapticsHwState *hw,
     		priv->circ_scroll_on || priv->prevFingers != hw->numFingers
 	)
     {
-//    	yolog_debug("Resetting packet counter for some reason");
-//    	if(hw->new_coords) {
-//    		yolog_debug("new_coords set");
-//    	}
-        /* reset packet counter. */
         priv->count_packet_finger = 0;
         goto out;
     }
@@ -1910,46 +1909,206 @@ out:
     *dxP = dx;
     *dyP = dy;
 
+    /*Try delta slowdown.*/
+//    if(hw->new_coords) {
+//    	yolog_warn("shift detected. Setting slowdown");
+//    	/*Do we set the slowdown here?*/
+//    	if(priv->prevFingers >= 2 && hw->numFingers == 1) {
+//    		priv->amt_shift_slowdown = SYNAPTICS_FINGERSHIFT_SLOWDOWN;
+//    	}
+//    }
+//    if(priv->amt_shift_slowdown) {
+////    	yolog_warn("Triggering slowdown..");
+//    	*dxP /= priv->amt_shift_slowdown;
+//    	*dyP /= priv->amt_shift_slowdown;
+//    	priv->amt_shift_slowdown -= 0.5;
+//    }
     return delay;
 }
 
 struct ScrollData {
     int left, right, up, down;
+    //Scrolling
 };
+
+#define _AXIS_X 1
+#define _AXIS_Y 2
+#define SMOOTHED_UNSET 10000
+static inline void
+finger_scroll_on_start(SynapticsPrivate *priv, struct SynapticsHwState *hw, int axis)
+{
+	priv->count_scroll_finger = 0;
+	int i;
+	SynhistLog *log;
+
+	if(axis == _AXIS_X) {
+	    DBG(7, "horiz two-finger scroll detected\n");
+	    priv->scroll_last_delta_x = POS_OOB;
+		priv->scroll_x = hw->x;
+		priv->horiz_scroll_twofinger_on = TRUE;
+		priv->horiz_scroll_edge_on = FALSE;
+		log = priv->scroll_hist_x;
+	} else {
+	    DBG(7, "vert two-finger scroll detected\n");
+//	    priv->scroll_last_delta_y = POS_OOB;
+		priv->scroll_y = hw->y;
+		priv->vert_scroll_twofinger_on = TRUE;
+		priv->vert_scroll_edge_on = FALSE;
+		log = priv->scroll_hist_y;
+	}
+	for(i = 0; i < 3; i++) {
+		synhist_reset(&(log[i]));
+	}
+}
+
+static inline void
+finger_scroll_on_end(SynapticsPrivate *priv, int axis)
+{
+	priv->count_scroll_finger = 0;
+	if(axis == _AXIS_X) {
+		priv->horiz_scroll_twofinger_on = FALSE;
+	} else {
+		priv->vert_scroll_twofinger_on = FALSE;
+	}
+}
+
+static inline void
+finger_scroll_update(SynapticsPrivate *priv, struct SynapticsHwState *hw,
+		int *xp, int *yp,
+		struct ScrollData *sd)
+{
+	Bool want_x = priv->horiz_scroll_twofinger_on;
+	Bool want_y = priv->vert_scroll_twofinger_on;
+	int current[2], pos_avg = POS_OOB, i, last;
+	SynhistLog *log = priv->scroll_hist_y;
+	SynapticsFinger **fingers = hw->scroll_fingers;
+	Bool *fsel = hw->scroll_pass_y;
+
+	if(fsel[0] == FALSE && fsel[1] == FALSE) {
+		yolog_debug("Didn't get anything useful. Returning");
+	}
+
+	/*Collect the values*/
+	for (i = 0; i < 2; i++) {
+		if(fsel[i]) {
+			current[i] = fingers[i]->y;
+			last = i;
+		} else {
+			current[i] = POS_OOB;
+		}
+	}
+
+	/*We have a partial update*/
+	if(current[0] == POS_OOB || current[1] == POS_OOB) {
+		yolog_warn("Got partial update");
+		int last_other = (last == 0) ? 1 : 0;
+		int last_vals[1];
+		int *tmp = last_vals;
+		synhist_last_values(&(log[last_other]), 1, &tmp);
+		if(tmp) {
+			/*We have history data for the partial update. Collect*/
+			pos_avg = (last_vals[0] + fingers[last]->y) / 2;
+			yolog_info("Got history log: %d. Compare with %d", last_vals[0],
+					fingers[last]->y);
+		} else {
+			/*No previous history*/
+			pos_avg = priv->scroll_y;
+		}
+	} else {
+		pos_avg = (current[0] + current[1]) / 2;
+	}
+
+	*yp = pos_avg;
+
+	GT_UPDATE:
+
+	{
+	int para_delta = priv->synpara.scroll_dist_vert;
+	yolog_warn("pos_avg=%d", pos_avg);
+	int n_up, n_down;
+	int diff = abs(pos_avg - priv->scroll_y);
+
+	while(pos_avg - priv->scroll_y > para_delta) {
+		n_down++;
+		priv->scroll_y += para_delta;
+	}
+	while(pos_avg - priv->scroll_y < -para_delta) {
+		n_up++;
+		priv->scroll_y -= para_delta;
+	}
+	if(n_down > n_up) {
+		sd->down += n_down;
+	} else if (n_up > n_down) {
+		sd->up += n_up;
+	}
+
+	}
+	GT_LOG:
+	priv->scroll_last_delta_y = pos_avg - priv->scroll_y;
+	last = -1;
+	for(i = 0; i < 2; i++) {
+		if(fingers[i] && fsel[i]) {
+			synhist_set(&(log[i]), fingers[i]->y, hw->millis);
+		}
+	}
+	/*Update averages count*/
+	if(pos_avg == POS_OOB) {
+		return;
+	}
+	yolog_info("Msec: %d", hw->millis);
+	synhist_set(&(log[SYNHIST_IDX_AVG]), pos_avg, hw->millis);
+}
 
 static void
 start_coasting(SynapticsPrivate *priv, struct SynapticsHwState *hw, edge_type edge,
 	       Bool vertical)
 {
     SynapticsParameters *para = &priv->synpara;
-
+    SynhistLog *log = &(priv->scroll_hist_y[SYNHIST_IDX_AVG]);
     priv->autoscroll_y = 0.0;
     priv->autoscroll_x = 0.0;
+    int hist_count = log->count;
+    int last_pos[4], last_times[4];
+    int *tmp;
 
-    if ((priv->scroll_packet_count > 3) && (para->coasting_speed > 0.0)) {
-	double pkt_time = (HIST(0).millis - HIST(3).millis) / 1000.0;
-	if (para->scroll_twofinger_vert || vertical) {
-	    double dy = estimate_delta(HIST(0).y, HIST(1).y, HIST(2).y, HIST(3).y);
+    if (hist_count > 3 && (para->coasting_speed > 0.0)) {
+    	yolog_debug("Trying to estimate coasting");
+        tmp = &last_times;
+        synhist_last_times(log, 4, &tmp);
+        if(!tmp) {
+        	yolog_err("OOPS!");
+        	return;
+        }
+        tmp = &last_pos;
+        synhist_last_values(log, 4, &tmp);
+        if(!tmp) {
+        	yolog_err("OOPS2");
+        	return;
+        }
+        double pkt_time = (last_times[0] - last_times[3]) / 1000.0;
+	    double dy = estimate_delta(last_pos[0], last_pos[1], last_pos[2], last_pos[3]);
+	    yolog_info("times: %d,%d,%d,%d", last_times[0], last_times[1],last_times[2],last_times[3]);
+	    yolog_info("pos: %d,%d,%d,%d", last_pos[0], last_pos[1], last_pos[2], last_pos[3]);
+	    yolog_info("pkt_time=%0.5f, dy=%0.5f", pkt_time, dy);
 	    int sdelta = para->scroll_dist_vert;
 	    if ((para->scroll_twofinger_vert || (edge & RIGHT_EDGE)) && pkt_time > 0 && sdelta > 0) {
-		double scrolls_per_sec = dy / pkt_time / sdelta;
-		if (fabs(scrolls_per_sec) >= para->coasting_speed) {
-		    priv->autoscroll_yspd = scrolls_per_sec;
-		    priv->autoscroll_y = (hw->y - priv->scroll_y) / (double)sdelta;
-		}
+	    	double scrolls_per_sec = dy / pkt_time / sdelta;
+	    	if (fabs(scrolls_per_sec) >= para->coasting_speed) {
+	    		priv->autoscroll_yspd = scrolls_per_sec;
+	    		priv->autoscroll_y = (last_pos[0] - priv->scroll_y) / (double)sdelta;
+	    	}
 	    }
-	}
-	if (para->scroll_twofinger_horiz || !vertical){
-	    double dx = estimate_delta(HIST(0).x, HIST(1).x, HIST(2).x, HIST(3).x);
-	    int sdelta = para->scroll_dist_horiz;
-	    if ((para->scroll_twofinger_horiz || (edge & BOTTOM_EDGE)) && pkt_time > 0 && sdelta > 0) {
-		double scrolls_per_sec = dx / pkt_time / sdelta;
-		if (fabs(scrolls_per_sec) >= para->coasting_speed) {
-		    priv->autoscroll_xspd = scrolls_per_sec;
-		    priv->autoscroll_x = (hw->x - priv->scroll_x) / (double)sdelta;
-		}
-	    }
-	}
+//	if (para->scroll_twofinger_horiz || !vertical){
+//	    double dx = estimate_delta(HIST(0).x, HIST(1).x, HIST(2).x, HIST(3).x);
+//	    int sdelta = para->scroll_dist_horiz;
+//	    if ((para->scroll_twofinger_horiz || (edge & BOTTOM_EDGE)) && pkt_time > 0 && sdelta > 0) {
+//		double scrolls_per_sec = dx / pkt_time / sdelta;
+//		if (fabs(scrolls_per_sec) >= para->coasting_speed) {
+//		    priv->autoscroll_xspd = scrolls_per_sec;
+//		    priv->autoscroll_x = (hw->x - priv->scroll_x) / (double)sdelta;
+//		}
+//	    }
+//	}
     }
     priv->scroll_packet_count = 0;
 }
@@ -2009,17 +2168,13 @@ HandleScrolling(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	    if (effective_numFingers == 2) {
 		if (!priv->vert_scroll_twofinger_on &&
 		    (para->scroll_twofinger_vert) && (para->scroll_dist_vert != 0)) {
-		    priv->vert_scroll_twofinger_on = TRUE;
-		    priv->vert_scroll_edge_on = FALSE;
-		    priv->scroll_y = hw->y;
-		    DBG(7, "vert two-finger scroll detected\n");
+			finger_scroll_on_start(priv, hw, _AXIS_Y);
+			stop_coasting(priv);
 		}
 		if (!priv->horiz_scroll_twofinger_on &&
 		    (para->scroll_twofinger_horiz) && (para->scroll_dist_horiz != 0)) {
-		    priv->horiz_scroll_twofinger_on = TRUE;
-		    priv->horiz_scroll_edge_on = FALSE;
-		    priv->scroll_x = hw->x;
-		    DBG(7, "horiz two-finger scroll detected\n");
+			finger_scroll_on_start(priv, hw, _AXIS_X);
+			stop_coasting(priv);
 		}
 	    }
 	}
@@ -2054,11 +2209,13 @@ HandleScrolling(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	if (!finger || effective_numFingers != 2) {
 	    if (priv->vert_scroll_twofinger_on) {
 		DBG(7, "vert two-finger scroll off\n");
-		priv->vert_scroll_twofinger_on = FALSE;
+		finger_scroll_on_end(priv, _AXIS_Y);
+//		priv->vert_scroll_twofinger_on = FALSE;
 	    }
 	    if (priv->horiz_scroll_twofinger_on) {
 		DBG(7, "horiz two-finger scroll off\n");
-		priv->horiz_scroll_twofinger_on = FALSE;
+		finger_scroll_on_end(priv, _AXIS_X);
+//		priv->horiz_scroll_twofinger_on = FALSE;
 	    }
 	}
 
@@ -2087,6 +2244,7 @@ HandleScrolling(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	    !(priv->circ_scroll_on || priv->vert_scroll_edge_on ||
 	      priv->horiz_scroll_edge_on || priv->horiz_scroll_twofinger_on ||
 	      priv->vert_scroll_twofinger_on)) {
+		yolog_info("Start coasting..");
 	    start_coasting(priv, hw, edge, oldv);
 	}
     }
@@ -2138,34 +2296,42 @@ HandleScrolling(SynapticsPrivate *priv, struct SynapticsHwState *hw,
 	priv->scroll_packet_count++;
     }
 
-    if (priv->vert_scroll_edge_on || priv->vert_scroll_twofinger_on) {
-	/* + = down, - = up */
-	int delta = para->scroll_dist_vert;
-	if (delta > 0) {
-	    while (hw->y - priv->scroll_y > delta) {
-		sd->down++;
-		priv->scroll_y += delta;
-	    }
-	    while (hw->y - priv->scroll_y < -delta) {
-		sd->up++;
-		priv->scroll_y -= delta;
-	    }
-	}
+	int effective_x = hw->x, effective_y = hw->y;
+    if(priv->vert_scroll_twofinger_on || priv->horiz_scroll_twofinger_on) {
+		finger_scroll_update(priv, hw, &effective_x, &effective_y, sd);
+    	priv->count_scroll_finger++;
     }
-    if (priv->horiz_scroll_edge_on || priv->horiz_scroll_twofinger_on) {
-	/* + = right, - = left */
-	int delta = para->scroll_dist_horiz;
-	if (delta > 0) {
-	    while (hw->x - priv->scroll_x > delta) {
-		sd->right++;
-		priv->scroll_x += delta;
-	    }
-	    while (hw->x - priv->scroll_x < -delta) {
-		sd->left++;
-		priv->scroll_x -= delta;
-	    }
-	}
-    }
+
+//    if (priv->vert_scroll_edge_on || priv->vert_scroll_twofinger_on) {
+//	/* + = down, - = up */
+//	int delta = para->scroll_dist_vert;
+//
+//	if (delta > 0) {
+//	    while (effective_y - priv->scroll_y > delta) {
+//		sd->down++;
+//		priv->scroll_y += delta;
+//	    }
+//	    while (effective_y - priv->scroll_y < -delta) {
+//		sd->up++;
+//		priv->scroll_y -= delta;
+//	    }
+////	    yolog_debug("scroll_y=%d", priv->scroll_y);
+//	}
+//    }
+//    if (priv->horiz_scroll_edge_on || priv->horiz_scroll_twofinger_on) {
+//	/* + = right, - = left */
+//	int delta = para->scroll_dist_horiz;
+//	if (delta > 0) {
+//	    while (effective_x - priv->scroll_x > delta) {
+//		sd->right++;
+//		priv->scroll_x += delta;
+//	    }
+//	    while (effective_x - priv->scroll_x < -delta) {
+//		sd->left++;
+//		priv->scroll_x -= delta;
+//	    }
+//	}
+//    }
     if (priv->circ_scroll_on) {
 	/* + = counter clockwise, - = clockwise */
 	double delta = para->scroll_dist_circ;
@@ -2378,11 +2544,15 @@ post_button_click(const InputInfoPtr pInfo, const int button)
 static void
 post_scroll_events(const InputInfoPtr pInfo, struct ScrollData scroll)
 {
-    while (scroll.up-- > 0)
+    while (scroll.up-- > 0) {
+    	yolog_debug("Posting up");
         post_button_click(pInfo, 4);
+    }
 
-    while (scroll.down-- > 0)
+    while (scroll.down-- > 0) {
         post_button_click(pInfo, 5);
+        yolog_debug("Posting down");
+    }
 
     while (scroll.left-- > 0)
         post_button_click(pInfo, 6);
@@ -2473,7 +2643,6 @@ HandleState(InputInfoPtr pInfo, struct SynapticsHwState *hw)
     priv->hyst_center_y = hysteresis(hw->y, priv->hyst_center_y, para->hyst_y);
     hw->x = priv->hyst_center_x;
     hw->y = priv->hyst_center_y;
-//    DBG(7, "Raw:   X=%d, Y=%d\n", hw->x, hw->y);
 
     inside_active_area = is_inside_active_area(priv, hw->x, hw->y);
 
@@ -2584,6 +2753,7 @@ HandleState(InputInfoPtr pInfo, struct SynapticsHwState *hw)
     while (change) {
 	id = ffs(change); /* number of first set bit 1..32 is returned */
 	change &= ~(1 << (id - 1));
+	yolog_debug("Posting button event");
 	xf86PostButtonEvent(pInfo->dev, FALSE, id, (buttons & (1 << (id - 1))), 0, 0);
     }
 
